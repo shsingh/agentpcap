@@ -38,16 +38,16 @@ fn p000_canary_loads_and_emits_in_vm() {
     // The probe counts invocations into the `events` map. The canary
     // reads the counter back in-process; tracefs content is not
     // required anywhere in this loop.
-    let mut events: aya::maps::HashMap<_, u32, u64> = bpf
+    let mut events: aya::maps::Array<_, u64> = bpf
         .take_map("events")
         .expect("events map missing")
         .try_into()
-        .expect("events map is not a hash map");
-    let counter_key = 0u32;
+        .expect("events map is not an array");
+    let counter_index = 0u32;
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut seen = 0u64;
     while Instant::now() < deadline {
-        if let Ok(v) = events.get(&counter_key, 0) {
+        if let Ok(v) = events.get(&counter_index, 0) {
             seen = v;
             if seen > 0 {
                 break;

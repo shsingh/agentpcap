@@ -5,16 +5,16 @@
 #![no_main]
 
 use aya_ebpf::macros::{map, tracepoint};
-use aya_ebpf::maps::HashMap;
+use aya_ebpf::maps::Array;
 use aya_ebpf::programs::TracePointContext;
 
 #[map(name = "events")]
-static mut EVENTS: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
+static mut EVENTS: Array<u64> = Array::with_max_entries(1, 0);
 
 #[tracepoint]
 pub fn agentpcap(_ctx: TracePointContext) -> i64 {
     unsafe {
-        if let Some(ptr) = EVENTS.get_ptr_mut(&0u32) {
+        if let Some(ptr) = EVENTS.get_ptr_mut(0) {
             *ptr += 1;
         }
     }
