@@ -16,6 +16,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod conformance;
+
 pub const SCHEMA_VERSION: &str = "1.0";
 
 /// Failure classes for the ordered-check semantics of the ledger.
@@ -27,6 +29,8 @@ pub enum LedgerError {
     ChainBreak(usize),
     /// Record at index is not a valid JSON object.
     Format(usize),
+    /// The record carries a foreign `schema_version`.
+    SchemaMismatch(usize),
     Io(std::io::Error),
 }
 
@@ -36,6 +40,7 @@ impl fmt::Display for LedgerError {
             LedgerError::TornTail => write!(f, "torn tail: file does not end with a newline"),
             LedgerError::ChainBreak(i) => write!(f, "chain break at record {i}"),
             LedgerError::Format(i) => write!(f, "record {i} is not a valid JSON object"),
+            LedgerError::SchemaMismatch(i) => write!(f, "record {i} carries a foreign schema_version"),
             LedgerError::Io(e) => write!(f, "io: {e}"),
         }
     }
@@ -54,18 +59,9 @@ fn trunc(body: &str) -> String {
     hex::encode(d)[..16].to_string()
 }
 
-/// Verify a single ledger file. Returns the record count and the hash
-/// of the last record body.
-fn check(path: &Path) -> Result<(usize, String), LedgerError> {
-    let data = fs::read(path)?;
-    if data.is_empty() {
-        return Ok((0, String::new()));
-    }
-    if data.last() != Some(&b'\n') {
-        return Err(LedgerError::TornTail);
-    }
-    let text = String::from_utf8_lossy(&data);
-    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+/// Verify one in-memory record sequence against the chain rule.
+/// Shared by `check` and the conformance runner.
+pub(crate) fn chain_of(lines: &[&str]) -> Result<(), LedgerError> {
     // Line 0 is genesis (empty `prev`) or a carried hash from a closed
     // segment after rotation. In-file chaining is enforced from line 1.
     let mut expected = String::new();
@@ -83,7 +79,24 @@ fn check(path: &Path) -> Result<(usize, String), LedgerError> {
         }
         expected = trunc(line);
     }
-    Ok((lines.len(), expected))
+    Ok(())
+}
+
+/// Verify a single ledger file. Returns the record count and the hash
+/// of the last record body.
+fn check(path: &Path) -> Result<(usize, String), LedgerError> {
+    let data = fs::read(path)?;
+    if data.is_empty() {
+        return Ok((0, String::new()));
+    }
+    if data.last() != Some(&b'\n') {
+        return Err(LedgerError::TornTail);
+    }
+    let text = String::from_utf8_lossy(&data);
+    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    chain_of(&lines)?;
+    let last = lines[lines.len() - 1];
+    Ok((lines.len(), trunc(last)))
 }
 
 /// Verify a ledger file. Returns its record count.
@@ -127,6 +140,11 @@ impl LedgerWriter {
         let obj = line
             .as_object_mut()
             .ok_or(LedgerError::Format(self.count))?;
+        if let Some(v) = obj.get("schema_version") {
+            if v.as_str() != Some(SCHEMA_VERSION) {
+                return Err(LedgerError::SchemaMismatch(self.count));
+            }
+        }
         obj.insert("prev".into(), Value::String(self.prev.clone()));
         obj.entry("schema_version")
             .or_insert_with(|| Value::String(SCHEMA_VERSION.into()));

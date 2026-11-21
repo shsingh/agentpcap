@@ -22,3 +22,19 @@ fn l10_fixtures_answer_their_expectations() {
         );
     }
 }
+
+#[test]
+fn l104_writer_refuses_foreign_schema() {
+    use agentpcap_ledger::LedgerWriter;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.jsonl");
+    let mut w = LedgerWriter::create(&path).unwrap();
+
+    let foreign = json!({"event": "init", "schema_version": "9.9"});
+    assert!(w.append(&foreign).is_err(), "a foreign schema_version is refused");
+
+    let ok = json!({"event": "init"});
+    assert!(w.append(&ok).is_ok(), "a versionless record continues");
+}
