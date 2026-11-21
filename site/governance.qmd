@@ -1,0 +1,39 @@
+---
+title: Governance
+---
+
+## Maintainer
+
+The project is maintained by Shain Singh
+([shain.singh@owasp.org](mailto:shain.singh@owasp.org)). The maintainer
+reviews and merges every pull request; auto-merge is never enabled on
+the maintainer's behalf.
+
+## Working agreement
+
+- Conventional Commits on every commit subject and pull-request title,
+  checked by a CI gate.
+- Signed commits: the OpenPGP key
+  `9CB1781DC2BB28D37A0155DCAAF8226F3F4C1712` (OWASP identity); the
+  `protect-default` ruleset rejects unsigned commits. Releases carry
+  signed tags.
+- One logical change per branch, merged by pull request; direct pushes
+  to `main` do not happen.
+
+## Licence posture
+
+The project carries the [MIT licence](https://github.com/shsingh/agentpcap/blob/main/LICENSE)
+for its original code. Third-party sources keep their own terms; the
+inventory and the inheritance analysis live in
+[NOTICE.md](https://github.com/shsingh/agentpcap/blob/main/NOTICE.md).
+MIT and Apache-2.0 are both permissive; Apache-2.0 sources may ride
+inside an MIT project when their notices travel with them.
+
+## Specification governance
+
+The canonical specification is
+[`docs/spec.md`](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md)
+in the mmark dialect; CI renders it to text, HTML and PDF on every
+source push. The event schema and the ledger format are the interface
+contract; incompatible changes bump `schema_version` and carry a
+migration note.

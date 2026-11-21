@@ -1,0 +1,28 @@
+# Rust
+target/
+dist/
+
+# Ledger and capture outputs (operator-side artefacts; never committed)
+/out/
+/results/
+*.ledger.jsonl
+*.access.log
+
+# Test and coverage artefacts
+*.test
+*.out
+coverage.txt
+*.prof
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Temporary
+*.log
+tmp/
+
+# Quarto build output (regenerated; never committed)
+site/_site/

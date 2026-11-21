@@ -1,0 +1,51 @@
+---
+title: agentpcap
+subtitle: A read-only, protocol-aware tap for agent tool calls
+---
+
+agentpcap observes the socket and pipe boundaries where language-model
+agents reach their tools. The Model Context Protocol (MCP) carries every
+tool call as JSON-RPC — over pipes for locally launched servers, over
+TLS for remote ones. The tap reassembles those frames into MCP and A2A
+sessions, classifies what it cannot bind, and appends every flow to a
+lossless, per-host, append-only ledger.
+
+One static Rust binary. No agent-side library. No routing change. No
+gateway in the path.
+
+## The three blind spots
+
+1. **The path problem.** In-path gateways govern only what routes
+   through them. Shadow deployments, local tools and off-network
+   clients bypass them by construction.
+2. **The decryption problem.** Network-side detection wants the
+   encrypted payload. Without TLS termination on the inspection path,
+   a tool call is unattributable metadata.
+3. **The stdio problem.** The most common MCP transport never touches
+   a network: JSON-RPC over the pipes between a client and its
+   launched server. No network-resident product can reach it, ever.
+
+One out-of-path instrument and one append-only ledger close all three.
+
+## How it differs
+
+| System | Covers | Limit | agentpcap's answer |
+|---|---|---|---|
+| agentgateway (Linux Foundation) | routing + policy for routed MCP/A2A traffic | in-path by configuration | the tap sees the bypass flows; exports feed one ledger |
+| In-path enterprise brokers | MCP catalogs and enforcement at the enforcement point | coverage ends where routing ends | out-of-path capture on the host |
+| SWG deep-packet inspection | MCP sessions under TLS decryption | decryption required; stdio invisible | opaque mode; the pipe collector |
+| Generic eBPF observability | HTTP, DNS, databases, Kafka | no MCP/A2A semantics | protocol semantics as a first-class layer |
+| AgentSight | eBPF capture at the system boundary; sub-3% overhead | agent-scoped, single host; no ledger | session reassembly plus the ledger as the product |
+| Scanners | tool poisoning, rug pulls — at scan time | no wire-time record | capability drift at drift time from the ledger |
+
+The one-line difference: the market answers the question each product
+was built for. agentpcap produces the one artefact none of them produce —
+the append-only, per-host record of who called what, with which
+capabilities, when.
+
+## Status
+
+Early development, specification-first. The canonical specification is
+[`docs/spec.md`](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md)
+and renders in CI. The implementation builds to it in Rust with eBPF
+via aya; the evaluation fleet is the first milestone.

@@ -1,0 +1,42 @@
+---
+title: Security
+---
+
+## Reporting a vulnerability
+
+Report security bugs to
+**[shain.singh@owasp.org](mailto:shain.singh@owasp.org)** or through
+GitHub's private vulnerability reporting:
+[Report a vulnerability](https://github.com/shsingh/agentpcap/security/advisories/new).
+Never open a public issue for an unreported vulnerability. Reports may
+go encrypted to the project's
+[OpenPGP key](https://github.com/shsingh.gpg)
+(`9CB1781DC2BB28D37A0155DCAAF8226F3F4C1712`); advisory text and key
+material live in [SECURITY.md](https://github.com/shsingh/agentpcap/blob/main/SECURITY.md).
+
+## What counts as a security bug here
+
+- **Read-only invariant regression** — any path that writes to traffic,
+  injects, or terminates connections. The tap changes no path.
+- **Ledger chain integrity** — appends without the `prev` hash, rewrites
+  of prior segments, or access-log under-capture.
+- **eBPF surface regression** — unpinned probe bytecode, capability
+  escalation beyond the documented set.
+- **Data-minimization regression** — arguments, prompts, or payload
+  content stored by default; attributed mode on without explicit opt-in.
+- **Classification misstatement** — verdicts or evidence that misstate
+  an observation.
+
+## Authorised use
+
+The tap observes estates the operator owns or is authorised to
+observe: its own hosts, its own clusters, and lab fleets built for
+evaluation. Australian users: the Cyber Security Act 2024 (Cth) and
+Criminal Code Act 1995 (Cth) Div 474 apply; other jurisdictions carry
+their own equivalents.
+
+## Repository hygiene
+
+Secret scanning and push protection stay on; every commit carries a
+signature; Dependency Review checks licence and vulnerability deltas on
+every pull request.

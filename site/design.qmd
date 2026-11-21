@@ -1,0 +1,55 @@
+---
+title: Design
+---
+
+## Components
+
+The instrument is one binary with six components: a socket collector
+(eBPF, cgroup-filtered), a TLS-boundary collector (uprobes; attributed
+mode only), a pipe collector for the stdio transport, the reassembler
+that turns frames into session events, the ledger writer, and the
+operator CLI (`record`, `report`, `diff`, `export`).
+
+![agentpcap internal pipeline: collectors, reassembly, ledger, gate](assets/fig1-pipeline.png)
+
+## The data path
+
+```
+socket collector (eBPF) ─┐
+TLS-boundary collector ──┼─→ ring buffer → reassembler → classifier → ledger ──→ gate stream
+pipe collector (stdio) ──┘                                        └──→ report · diff · export
+```
+
+Capture is read-only: no interception, no termination, no path change.
+Capture loss degrades the ledger; the path is never affected.
+
+## Placement
+
+One binary, two placement modes, one event schema.
+
+![agentpcap deployment topologies: host-native daemon and per-node DaemonSet](assets/fig2-deployment.png)
+
+- **Host-native:** a systemd or launchd service with a bounded eBPF
+  capability set and a per-host ledger at a versioned path.
+- **Cluster-native:** the identical binary per node as a Kubernetes
+  DaemonSet; the node ledger carries the same schema; cluster review
+  aggregates node ledgers.
+
+## The flow ledger
+
+JSON Lines, append-only, hash-chained (`prev` field), access-logged.
+Tool names and capability fingerprints are stored; arguments and
+payloads are not. Rotation preserves the prefix; no index is built.
+Capability drift between sessions — the rug-pull pattern scanners check
+once — becomes a query at drift time.
+
+## Modes
+
+Opaque mode is the default and requires no TLS termination: evidence
+comes from transport features, pre-encryption headers, DNS and SNI, and
+pipe plaintext. Attributed mode is opt-in per host boundary through
+uprobes on the host's own TLS libraries. Every event records the mode
+that produced it.
+
+The full normative text is the
+[specification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md).
