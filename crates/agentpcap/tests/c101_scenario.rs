@@ -73,7 +73,13 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     // the ledger answers
     let text = std::fs::read_to_string(&ledger).unwrap();
     let mcp: Vec<&str> = text.lines().filter(|l| l.contains(r#""verdict":"mcp""#)).collect();
-    eprintln!("c101 ledger receipt: records={} mcp-records={}", text.lines().count(), mcp.len());
+    eprintln!(
+        "c101 ledger receipt: records={} mcp-records={} methods={:?}",
+        text.lines().count(),
+        mcp.len(),
+        mcp.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).ok()
+            .and_then(|v| v["method"].as_str().map(|s| s.to_string()))).collect::<Vec<_>>()
+    );
     assert!(mcp.len() >= 3, "the three framed requests classify mcp");
     assert!(text.contains(r#""method":"initialize""#), "initialize recorded");
     assert!(text.contains(r#""method":"tools/call""#), "the tools/call recorded");
