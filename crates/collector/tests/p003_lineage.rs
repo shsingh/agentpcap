@@ -63,22 +63,26 @@ fn p003_child_write_carries_the_parent_pid() {
     let now = Instant::now();
     let deadline = now + Duration::from_secs(8);
     let mut found = false;
+    let mut our_fork_pair: Option<String> = None;
+    let mut popped = 0u64;
     while Instant::now() < deadline && !found {
         for _ in 0..2048 {
             match queue.pop(0) {
                 Ok(s) => {
+                    popped += 1;
                     if s.pid == child_pid {
                         let prefix = String::from_utf8_lossy(
                             &s.first_bytes[..(s.len as usize).min(32)],
                         )
                         .to_string();
                         eprintln!("p003 child sample: ppid={} payload={:?}", s.ppid, prefix);
-                        if s.ppid == me
-                            && prefix.starts_with("agentpcap-p003")
-                        {
+                        if s.ppid == me && prefix.starts_with("agentpcap-p003") {
                             found = true;
                             break;
                         }
+                    }
+                    if s.first_bytes.starts_with(b"forkpair") && s.pid == me {
+                        our_fork_pair = Some(format!("parent={} child={}", s.pid, s.ppid));
                     }
                 }
                 Err(_) => break,
@@ -88,6 +92,9 @@ fn p003_child_write_carries_the_parent_pid() {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+    eprintln!(
+        "p003 drain: popped={popped} our_fork_pair={our_fork_pair:?}"
+    );
 
     // Fork pair receipts: the last fork pairs the probe pushed.
     let mut forks_seen: Vec<String> = Vec::new();
