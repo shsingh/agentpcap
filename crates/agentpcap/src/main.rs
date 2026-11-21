@@ -282,7 +282,11 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                                 }
                             }
                         })
-                        .and_then(|peer| if peer == "skipped" { None } else { Some(peer) });
+                        .and_then(|p| if p == "skipped" { None } else { Some(p) });
+                        eprintln!(
+                            "agentpcap tap: resolve: machine_pid={machine_pid} fd={} peer={:?}",
+                            s.fd, peer
+                        );
                         let died_unresolved = peer.is_none();
                         let peer = peer.unwrap_or_else(|| "unresolved".to_string());
                         let ppid =
