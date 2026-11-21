@@ -27,8 +27,15 @@ fn p000_canary_loads_and_emits_in_vm() {
     prog.attach("ksys_write", 0)
         .expect("attach to ksys_write failed");
 
-    // The probe writes a marker through bpf_printk, observable on
-    // trace_pipe. System write activity keeps the pipe supplied.
+    // The probe writes a marker through bpf_printk, observable on the
+    // trace buffers. The build VM boots with tracing off; enable it for
+    // the scan and restore the previous state after.
+    let tracing_on = std::path::Path::new("/sys/kernel/tracing/tracing_on");
+    let was_on = std::fs::read_to_string(tracing_on)
+        .ok()
+        .is_some_and(|s| s.trim() == "1");
+    std::fs::write(tracing_on, "1").expect("cannot enable tracing (run as root)");
+
     let marker = "canary-agentpcap-p000";
     let mut trace = std::fs::File::open("/sys/kernel/tracing/trace_pipe")
         .expect("trace_pipe is not readable; tracing is unavailable");
@@ -45,5 +52,6 @@ fn p000_canary_loads_and_emits_in_vm() {
         }
     }
     drop(bpf);
+    let _ = std::fs::write(tracing_on, if was_on { "1" } else { "0" });
     assert!(seen, "no canary marker on trace_pipe within 3 s");
 }
