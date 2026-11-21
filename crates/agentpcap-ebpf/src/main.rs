@@ -5,7 +5,7 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::helpers::bpf_probe_read_user;
+use aya_ebpf::helpers::{bpf_get_current_pid_tgid, bpf_probe_read_user_buf};
 use aya_ebpf::macros::{map, tracepoint};
 use aya_ebpf::maps::{Array, Queue};
 use aya_ebpf::programs::TracePointContext;
@@ -35,11 +35,11 @@ static mut CANARY: Array<u64> = Array::with_max_entries(1, 0);
 pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
     // sys_enter_write layout on this kernel (format-verified): fd, buf,
     // count at 0, 8, 16 bytes.
-    let buf: usize = match unsafe { ctx.read_at(8) } {
+    let buf: usize = match unsafe { ctx.read_at::<usize>(8) } {
         Ok(v) => v,
         Err(_) => return 0,
     };
-    let count: usize = match unsafe { ctx.read_at(16) } {
+    let count: usize = match unsafe { ctx.read_at::<usize>(16) } {
         Ok(v) => v,
         Err(_) => return 0,
     };
@@ -61,12 +61,7 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
             first_bytes: [0u8; 32],
         };
         if take > 0 {
-            let ok = bpf_probe_read_user(
-                sample.first_bytes.as_mut_ptr().cast(),
-                take,
-                buf as *const core::ffi::c_void,
-            ) == 0;
-            if !ok {
+            if bpf_probe_read_user_buf(buf as *const u8, &mut sample.first_bytes[..take]).is_err() {
                 return 0;
             }
         }
