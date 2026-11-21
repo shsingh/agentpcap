@@ -92,7 +92,9 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     // The probe reports root-namespace pids; on the OrbStack build VM the
     // machine's pid namespace adds a fixed per-boot offset. The tap
     // self-calibrates: the offset falls out of the child's own marker
-    // sample (deployment hosts sit at offset 0).
+    // sample (deployment hosts sit at offset 0). Then a SECOND writer's
+    // sample is translated with that offset — the real check: the
+    // calibration generalizes to a writer the sentinel never saw.
     assert!(saw_marker_pid, "no marker sample within 8 s");
     let offset = sample_pid as i64 - child_pid as i64;
     let translated = sample_pid as i64 - offset;
@@ -102,6 +104,58 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     assert_eq!(
         translated, child_pid as i64,
         "the sample pid translates to the writer's pid with the boot offset"
+    );
+
+    // second writer: another child writes a jsonrpc line while this
+    // test drains; its sample must translate to its own pid and
+    // resolve to this test process as the parent
+    let scratch2 = std::env::temp_dir().join(format!("p003-second-{}", std::process::id()));
+    std::fs::remove_file(&scratch2).ok();
+    let _f2 = std::fs::File::create(&scratch2).unwrap();
+    let scratch2_c = scratch2.display().to_string();
+    let mut second = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "echo '{{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"p003-second-writer\"}}' >> '{scratch2_c}'; sleep 5"
+        ))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("second child spawn");
+    let second_pid = second.id();
+    let (second_sample_pid, translated_second) = {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut found = None;
+        while Instant::now() < deadline {
+            for _ in 0..2048 {
+                match queue.pop(0) {
+                    Ok(s) => {
+                        let n = (s.len as usize)
+                            .min(agentpcap_collector::PAYLOAD_BYTES_CAP);
+                        let prefix = String::from_utf8_lossy(&s.first_bytes[..n]).to_string();
+                        if prefix.contains("\"method\":\"p003-second-writer\"") {
+                            let t = s.pid as i64 - offset;
+                            found = Some((s.pid, t));
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        found.expect("no sample for the second writer within 8 s")
+    };
+    let _ = second.wait().expect("second child exits");
+    eprintln!(
+        "p003 receipt: second writer root_pid={second_sample_pid} ns={second_pid} translated={translated_second}"
+    );
+    assert_eq!(
+        translated_second, second_pid as i64,
+        "the calibration generalizes: the second writer's sample translates to its own pid"
     );
 
     // lineage: the /proc scan resolves the machine pid's parent, cached

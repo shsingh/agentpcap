@@ -140,9 +140,31 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     // Calibrate the pid-namespace offset: the tap writes one sentinel
     // through the same path every tapped writer uses; the probe's
     // root-namespace pid for that write minus the tap's own pid is the
-    // deployment's offset (zero on a direct host).
-    let calib_path = std::env::temp_dir().join(format!("agentpcap-tap-calib-{}", std::process::id()));
-    if std::fs::write(&calib_path, "agentpcap-calib").is_err() {
+    // deployment's offset (zero on a direct host). The sentinel carries
+    // a fresh unpredictable token (read from the host entropy pool) and
+    // the file is created exclusively in a private scratch directory, so
+    // a competing writer can neither pre-fill nor guess the accepted
+    // sample.
+    let calib_dir = tempfile::tempdir().map_err(|e| {
+        eprintln!("agentpcap tap: the calibration dir failed: {e}");
+        std::io::Error::other("calibration dir")
+    });
+    let calib_dir = match calib_dir {
+        Ok(d) => d,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let token = random_token();
+    let mut expected = b"agentpcap-calib-".to_vec();
+    expected.extend_from_slice(token.as_bytes());
+    expected.push(b'\n');
+    let calib_path = calib_dir.path().join("calib");
+    if std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&calib_path)
+        .and_then(|mut f| f.write_all(&expected))
+        .is_err()
+    {
         eprintln!("agentpcap tap: the calibration write failed");
         return ExitCode::FAILURE;
     }
@@ -153,14 +175,14 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         match queue.pop(0) {
             Ok(s) => {
                 let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
-                if s.first_bytes[..n].starts_with(b"agentpcap-calib") {
+                if n == expected.len() && s.first_bytes[..n] == expected {
                     offset = Some(s.pid as i64 - own as i64);
                 }
             }
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     }
-    let _ = std::fs::remove_file(&calib_path);
+    drop(calib_dir);
     let Some(offset) = offset else {
         eprintln!("agentpcap tap: the calibration sample never arrived");
         return ExitCode::FAILURE;
@@ -209,8 +231,31 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             std::fs::read_to_string(format!("/proc/{machine_pid}/comm"))
                                 .map(|c| c.trim().to_string())
                                 .unwrap_or_else(|_| "unknown".to_string());
+                        // pipe identity: the write's fd must name a pipe;
+                        // the pipe inode is the channel's pair key, so
+                        // both ends of one channel share the peer and
+                        // unrelated channels never collide. Non-pipe
+                        // writes (regular files, sockets) are not stdio
+                        // traffic and are not recorded.
+                        let link = std::fs::read_link(format!(
+                            "/proc/{machine_pid}/fd/{}",
+                            s.fd
+                        ))
+                        .map(|l| l.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                        let Some(inode) = link
+                            .strip_prefix("pipe:[")
+                            .and_then(|r| r.strip_suffix(']'))
+                        else {
+                            continue;
+                        };
+                        let peer = format!("pipe:{inode}");
                         let ppid =
                             resolve_parent(machine_pid, &mut cache, Duration::from_secs(2));
+                        let mut evidence = vec!["stdio-pipe".to_string()];
+                        if ppid != 0 {
+                            evidence.push(format!("lineage:parent-{ppid}"));
+                        }
                         let event = Event {
                             ts: now_rfc3339(),
                             host: host.clone(),
@@ -225,10 +270,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             cap_fingerprint: None,
                             protocol_version: None,
                             session_id: None,
-                            peer: format!("pipe:{machine_pid}"),
-                            dedup: format!("pipe:{machine_pid}:{seq}"),
+                            peer: peer.clone(),
+                            dedup: format!("{peer}:{seq}"),
                             payload,
-                            evidence: Some(vec!["stdio-pipe".into()]),
+                            evidence: Some(evidence),
                             source: "tap".into(),
                             schema_version: "1.0".into(),
                         };
@@ -259,6 +304,18 @@ fn event_name_for(method: Option<&str>) -> &'static str {
         Some("tools/list") => "tools-list",
         Some("tools/call") => "tools-call",
         Some(m) if m.starts_with("notifications/") => "notify",
-        _ => "session",
+        _ => "unidentified",
     }
+}
+
+/// A fresh hex token for the calibration sentinel (host entropy pool).
+fn random_token() -> String {
+    std::fs::read("/dev/urandom")
+        .map(|b| {
+            b.iter()
+                .take(8)
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        })
+        .unwrap_or_else(|_| format!("{:x}", std::process::id()))
 }

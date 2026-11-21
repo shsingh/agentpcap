@@ -28,9 +28,16 @@ offset  size  field
 0       4     pid    — the writer's kernel pid (root namespace)
 4       4     ppid   — the parent pid stamped by the fork probe
 8       4     len    — the captured byte count (<= payload cap)
-12      4     pad    — alignment
+12      4     fd     — the write syscall's first argument (was: padding)
 16      256   first_bytes — the first payload bytes of the write
 ```
+
+The history of this layout: 48 bytes with a 32-byte payload (the first
+pass), widened to 144 with 128 bytes (the method name did not fit), then
+to 272 with 256 bytes (a complete MCP line plus its framing newline must
+ride one sample). The former padding slot now carries the writer's file
+descriptor, which the tap resolves through `/proc` to the pipe's inode —
+the channel key both ends of one pipe share.
 
 - `PAYLOAD_BYTES_CAP` is 256 on both sides and both sides carry a
   compile-time size assert (`core::mem::size_of::<PipeSample>() == 272`

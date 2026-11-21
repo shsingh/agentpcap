@@ -35,7 +35,8 @@ pub struct PipeSample {
     pub ppid: u32,
     /// Payload bytes carried in `first_bytes`.
     pub len: u32,
-    pad: [u8; 4],
+    /// The writer's file descriptor (the write syscall's first argument).
+    fd: u32,
     /// The first payload bytes of the write buffer.
     pub first_bytes: [u8; 256],
 }
@@ -67,7 +68,10 @@ use std::time::Duration;
 
 /// Resolve the parent pid of `pid` through `/proc/<pid>/status` (the
 /// `PPid` line) and cache the answer for `ttl`. A process that has
-/// exited resolves to `0`; the cache entry drops.
+/// exited resolves to `0`; the cache entry drops. The cache answers
+/// without consulting `/proc` until the entry expires, so an exited
+/// child's parent persists until then — exit-sensitive callers ask
+/// after the expiry, not before.
 pub fn resolve_parent(pid: u32, cache: &mut ParentCache, ttl: Duration) -> u32 {
     if let Some(cached) = cache.get(&pid) {
         if cached.1.elapsed() <= ttl {
