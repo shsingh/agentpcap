@@ -146,8 +146,8 @@ fn p003_child_write_carries_the_parent_pid() {
     drop(bpf);
 
     eprintln!(
-        "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={}",
-        counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7]
+        "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={} fork_push_ok={} fork_push_fail={}",
+        counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7], counters[8], counters[9]
     );
     eprintln!(
         "p003 lineage map says child {child_pid} -> {:?}; expected {me}",
