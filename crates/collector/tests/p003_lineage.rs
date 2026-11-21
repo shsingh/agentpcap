@@ -83,7 +83,22 @@ fn p003_child_write_carries_the_parent_pid() {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    // Counter receipts from the probe: invocations and push outcomes.
+    let counters: aya::maps::Array<_, u64> = bpf
+        .take_map("events")
+        .expect("canary counter map missing")
+        .try_into()
+        .expect("canary map is not an array");
+    let counters: Vec<u64> = (0..8)
+        .map(|i| counters.get(&i, 0).unwrap_or(0))
+        .collect();
     drop(bpf);
+
+    eprintln!(
+        "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={}",
+        counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7]
+    );
     assert!(
         found,
         "no lineage-resolved sample for child {child_pid} of {me} within 8 s"
