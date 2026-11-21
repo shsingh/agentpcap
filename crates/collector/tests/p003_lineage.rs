@@ -93,12 +93,34 @@ fn p003_child_write_carries_the_parent_pid() {
     let counters: Vec<u64> = (0..8)
         .map(|i| counters.get(&i, 0).unwrap_or(0))
         .collect();
+
+    // Raw sample dump for the diagnosis: every (pid, ppid, payload)
+    // that surfaced, truncated to the write candidates.
+    let mut seen: Vec<String> = Vec::new();
+    if !found {
+        for _ in 0..1024 {
+            match queue.pop(0) {
+                Ok(s) => {
+                    let prefix = String::from_utf8_lossy(&s.first_bytes[..(s.len as usize).min(24)])
+                        .to_string();
+                    seen.push(format!("pid={} ppid={} payload={:?}", s.pid, s.ppid, prefix));
+                }
+                Err(_) => break,
+            }
+        }
+    }
     drop(bpf);
 
     eprintln!(
         "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={}",
         counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7]
     );
+    if !found {
+        eprintln!("p003 samples seen ({}):", seen.len());
+        for l in seen.iter().take(40) {
+            eprintln!("  {l}");
+        }
+    }
     assert!(
         found,
         "no lineage-resolved sample for child {child_pid} of {me} within 8 s"
