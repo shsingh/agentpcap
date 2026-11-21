@@ -30,12 +30,16 @@ const PAYLOAD_BYTES_CAP: u32 = 32;
 static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
 
 #[map(name = "events")]
-static mut CANARY: Array<u64> = Array::with_max_entries(4, 0);
+static mut CANARY: Array<u64> = Array::with_max_entries(8, 0);
 
 const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;
 const SLOT_PUSH_OK: u32 = 2;
 const SLOT_PUSH_FAIL: u32 = 3;
+const SLOT_FORK_INVOKE: u32 = 4;
+const SLOT_INSERT_OK: u32 = 5;
+const SLOT_INSERT_FAIL: u32 = 6;
+const SLOT_LOOKUP_HIT: u32 = 7;
 
 #[map(name = "lineage")]
 static mut LINEAGE: LruHashMap<u32, u32> = LruHashMap::with_max_entries(8192, 0);
@@ -45,6 +49,11 @@ static mut LINEAGE: LruHashMap<u32, u32> = LruHashMap::with_max_entries(8192, 0)
 /// parent_pid at 12 bytes (u32), child_pid at 20 bytes (u32).
 #[tracepoint]
 pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
+    unsafe {
+        if let Some(slot) = CANARY.get_ptr_mut(SLOT_FORK_INVOKE) {
+            *slot += 1;
+        }
+    }
     let parent: u32 = match unsafe { ctx.read_at::<u32>(12) } {
         Ok(v) => v,
         Err(_) => return 0,
@@ -54,7 +63,13 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
         Err(_) => return 0,
     };
     unsafe {
-        let _ = LINEAGE.insert(&child, &parent, 0);
+        if LINEAGE.insert(&child, &parent, 0).is_ok() {
+            if let Some(slot) = CANARY.get_ptr_mut(SLOT_INSERT_OK) {
+                *slot += 1;
+            }
+        } else if let Some(slot) = CANARY.get_ptr_mut(SLOT_INSERT_FAIL) {
+            *slot += 1;
+        }
     }
     0
 }
@@ -82,10 +97,16 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
             *slot += 1;
         }
         let pid: u32 = (bpf_get_current_pid_tgid() >> 32) as u32;
-        let ppid: u32 = unsafe { match LINEAGE.get(&pid) {
-            Some(parent) => *parent,
+        let looked = unsafe { LINEAGE.get(&pid) };
+        let ppid: u32 = match looked {
+            Some(parent) => {
+                if let Some(slot) = CANARY.get_ptr_mut(SLOT_LOOKUP_HIT) {
+                    *slot += 1;
+                }
+                *parent
+            }
             None => 0,
-        } };
+        };
         let mut sample = PipeSample {
             pid,
             ppid,
