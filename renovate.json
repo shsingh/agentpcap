@@ -35,6 +35,14 @@
         "cargo"
       ],
       "automerge": false
+    },
+    {
+      "matchPackagePatterns": [
+        "^aya$",
+        "^sha2$",
+        "^ubuntu$"
+      ],
+      "recreateClosed": false
     }
   ],
   "dependencyDashboard": {
