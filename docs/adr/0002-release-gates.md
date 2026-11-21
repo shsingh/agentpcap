@@ -12,13 +12,16 @@ measurements (M001 to M006); this record binds them to release gates.
 
 ## Decision
 
-Three gates, each with its scenario set and its measurement. The gate
-identifier carries the project abbrev (`AG` = agentpcap, after the same
-convention as `G` for a gap and `M` for a measurement) and the release
-track number: AG-0.1 and AG-0.2 are pre-1.0 build gates, AG-1.0 is the
-evaluation gate that decides the project's public claims.
+Three gates, each with its scenario set and its measurement. Each gate
+releases under the project's release convention: a calendar version
+(`YYYY.01`) with `alpha` and `rc` qualifiers, then general availability —
+the same sequence the maintainer's other projects shipped (rc suffixes
+while the gate scenarios run, GA once they pass). The MVP gate
+releases as `2027.01-alpha1`, the wire-class gate as `2027.01-alpha2`,
+the evaluation gate as `2027.01-rc1`; the general-availability tag is
+`2027.01`.
 
-### AG-0.1 — MVP: the stdio class, end to end
+### 2027.01-alpha1 — MVP: the stdio class, end to end
 
 Scenario: one lab host, one MCP client, one local MCP server launched
 over stdio. The pipe collector captures the JSON-RPC frames; the ledger
@@ -33,7 +36,7 @@ appends; `report` answers "who called what with which capabilities".
 - Evidence: the ledger excerpt, the report output, the conformance
   fixtures, posted in the release.
 
-### AG-0.2 — the wire class and both modes
+### 2027.01-alpha2 — the wire class and both modes
 
 Scenario: the same fleet plus remote MCP servers over Streamable HTTP
 with TLS, attributed mode active by default on every host.
@@ -47,7 +50,7 @@ with TLS, attributed mode active by default on every host.
 - Evidence: the coverage matrix, the drift diff, the deployment
   manifests, in the release.
 
-### AG-1.0 — the evaluation gate
+### 2027.01-rc1 — the evaluation gate
 
 Scenario: the full lab fleet with seeded shadow deployments, measured
 against the published baselines of the survey.
@@ -70,5 +73,6 @@ against the published baselines of the survey.
   scenarios pass and their evidence posts.
 - The evaluation harness owns the measurement surfaces; the binary
   exposes counters (spec, Section 13) and nothing else.
-- The gates map to project milestones AG-0.1, AG-0.2 and AG-1.0; the
+- The gates map to the project milestones `2027.01-alpha1`,
+`2027.01-alpha2` and `2027.01-rc1`; the
   roadmap page carries the live issue mapping.
