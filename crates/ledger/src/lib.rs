@@ -132,7 +132,7 @@ impl LedgerWriter {
     }
 
     fn segment_path(&self, n: usize) -> PathBuf {
-        let mut s = self.path.clone().into_os_string();
+        let mut s = self.path.to_path_buf().into_os_string();
         s.push(format!(".{n}"));
         PathBuf::from(s)
     }
@@ -175,7 +175,7 @@ impl LedgerReader {
             let v: Value = serde_json::from_str(line).map_err(|_| LedgerError::Format(i))?;
             records.push(v);
         }
-        let mut log = path.clone().into_os_string();
+        let mut log = path.to_path_buf().into_os_string();
         log.push(".access.log");
         let entry = json!({
             "actor": actor,
