@@ -1,8 +1,7 @@
 #!/bin/sh
-# The MCP server for the alpha1 scenario: reads JSON-RPC frames from the
-# client FIFO and answers each method on stdout (captured by the test).
-SERVER_FIFO="$1"
-
+# The MCP server for the alpha1 scenario: reads JSON-RPC frames from
+# stdin (piped by the client process) and answers each method on stdout
+# (captured by the test).
 while IFS= read -t 20 -r line; do
   case "$line" in
     *'"method":"initialize"'*)
@@ -15,4 +14,4 @@ while IFS= read -t 20 -r line; do
       printf '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"hello-from-read"}]}}\n'
       ;;
   esac
-done < "$SERVER_FIFO"
+done

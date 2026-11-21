@@ -1,10 +1,10 @@
 // C101 — the alpha1 scenario, end to end (ADR-0002): one host, one MCP
 // client, one local MCP server over a stdio pipe, the tap running, and
 // the ledger answering who called what. The test itself plays the MCP
-// client; the server answers on stdout; a single FIFO carries the frames.
-// The cell asserts: the ledger records the initialize framing and the
-// tools/call with its tool payload, and both ends surface with distinct
-// pids. The ledger excerpt rides the receipt.
+// client: it pipes the three framed requests into the server's stdin,
+// and the server answers on stdout (captured). The tap sees every write
+// on both ends. The cell asserts: the ledger records the initialize
+// framing and the tools/call, and the excerpt rides the receipt.
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
 use std::io::Write;
@@ -18,7 +18,6 @@ fn bin() -> Command {
 #[test]
 fn c101_the_stdio_scenario_answers_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
-    let dir_c = dir.path().display().to_string();
     let ledger = dir.path().join("ledger.jsonl");
 
     // the tap runs for the whole scenario window
@@ -33,22 +32,19 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .expect("agentpcap binary");
     std::thread::sleep(Duration::from_millis(1200));
 
-    let f1 = format!("{dir_c}/client-to-server.fifo");
-    std::fs::remove_file(&f1).ok();
-    Command::new("mkfifo").arg(&f1).status().expect("mkfifo f1");
+    let server_out = dir.path().join("server.log");
 
-    let server_out = format!("{dir_c}/server.log");
-
-    // the MCP server: a child of this test process
+    // the MCP server: a child of this test process, frames on stdin,
+    // replies on the captured stdout
     let mut server = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/mcp-server.sh")
-        .arg(&f1)
+        .stdin(Stdio::piped())
         .stdout(Stdio::from(std::fs::File::create(&server_out).unwrap()))
         .stderr(Stdio::null())
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
-    std::thread::sleep(Duration::from_millis(500));
+    let mut server_in = server.stdin.take().unwrap();
 
     // this test is the MCP client: write the three framed requests
     let frames = [
@@ -57,13 +53,13 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read","arguments":{"path":"/etc/hostname"}}}"#,
     ];
     for f in frames {
-        let mut h = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&f1)
-            .expect("fifo open");
-        h.write_all(format!("{f}\n").as_bytes()).expect("frame write");
+        server_in
+            .write_all(format!("{f}\n").as_bytes())
+            .expect("frame write");
+        server_in.flush().expect("frame flush");
         std::thread::sleep(Duration::from_millis(300));
     }
+    drop(server_in);
     let _sw = server.wait().expect("server exits on eof");
 
     // give the tap time to drain the last samples
