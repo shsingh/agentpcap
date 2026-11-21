@@ -306,16 +306,26 @@ impl Reassembler {
         if pipe_class && frame.ppid > 0 {
             let bucket_key = format!("req:{}", frame.ppid);
             if let Some(b) = self.pending.get_mut(&bucket_key) {
+                let mut consumed = false;
                 if let Some(v) = b.by_id.get_mut(&id) {
                     if v.len() == 1 {
                         let p = v.remove(0);
+                        consumed = v.is_empty();
                         bound = Some((format!("pipe-pair:{}:{}", frame.ppid, frame.pid), p));
                         pair_face = true;
                     }
                 }
+                // the completed id's empty vec leaves the map: a stale
+                // empty face under the id would pollute the fallback's
+                // later lookups
+                if consumed {
+                    b.by_id.remove(&id);
+                }
             }
         }
         if bound.is_none() {
+            // the matches count only NON-EMPTY vecs: an empty vec is a
+            // removed face, never a parked request
             let matches: usize = self
                 .pending
                 .values()
@@ -334,18 +344,24 @@ impl Reassembler {
                 )];
             }
             if matches == 1 {
-                let keys: Vec<String> = self
+                let key: Option<String> = self
                     .pending
                     .iter()
-                    .filter(|(_, b)| b.by_id.contains_key(&id))
-                    .map(|(k, _)| k.clone())
-                    .collect();
-                if let Some(b) = self.pending.get_mut(&keys[0]) {
-                    if let Some(v) = b.by_id.get_mut(&id) {
-                        if v.len() == 1 {
-                            let p = v.remove(0);
-                            // the session keys on the request's own channel
-                            bound = Some((p.peer.clone(), p));
+                    .find(|(_, b)| b.by_id.get(&id).map_or(false, |v| !v.is_empty()))
+                    .map(|(k, _)| k.clone());
+                if let Some(bucket_key) = key {
+                    if let Some(b) = self.pending.get_mut(&bucket_key) {
+                        let mut consumed = false;
+                        if let Some(v) = b.by_id.get_mut(&id) {
+                            if v.len() == 1 {
+                                let p = v.remove(0);
+                                consumed = v.is_empty();
+                                // the session keys on the request's own channel
+                                bound = Some((p.peer.clone(), p));
+                            }
+                        }
+                        if consumed {
+                            b.by_id.remove(&id);
                         }
                     }
                 }
