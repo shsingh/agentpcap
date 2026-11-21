@@ -59,6 +59,22 @@ fn c100_tap_ledgers_the_classified_flow() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("report lines are JSON objects"))
         .collect();
+    let summary: Vec<String> = events
+        .iter()
+        .map(|v| {
+            format!(
+                "verdict={} event={} method={:?} pid={}",
+                v["verdict"].as_str().unwrap_or("?"),
+                v["event"].as_str().unwrap_or("?"),
+                v["method"],
+                v["pid"]
+            )
+        })
+        .collect();
+    eprintln!("c100 ledger receipt ({}):", events.len());
+    for l in &summary {
+        eprintln!("  {l}");
+    }
     assert!(!events.is_empty(), "the ledger carries the flow");
 
     let mcp = events.iter().find(|v| v["verdict"].as_str() == Some("mcp"));
