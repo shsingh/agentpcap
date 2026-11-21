@@ -8,7 +8,7 @@
 
 use aya_ebpf::EbpfContext;
 use aya_ebpf::helpers::{
-    bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user_buf,
+    bpf_get_current_pid_tgid, bpf_probe_read_kernel_buf, bpf_probe_read_user_buf,
 };
 use aya_ebpf::macros::{map, tracepoint};
 use aya_ebpf::maps::{Array, LruHashMap, Queue};
@@ -80,7 +80,7 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
                 pad: [0; 4],
                 first_bytes: [0u8; 32],
             };
-            if bpf_probe_read_kernel(raw.first_bytes.as_mut_ptr().cast(), 32, ctx.as_ptr()).is_ok()
+            if bpf_probe_read_kernel_buf(ctx.as_ptr() as *const u8, &mut raw.first_bytes).is_ok()
             {
                 let _ = EVENTS.push(&raw, 0);
             }
