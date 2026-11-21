@@ -1,7 +1,6 @@
-// C001-C003 — the record and report CLI faces (`docs/spec.md#9-operator-cli`).
-// record: JSON Lines on stdin append to the ledger, chain intact.
+// C002 — the report CLI cell (`docs/spec.md#9-operator-cli`).
 // report: the records to stdout, with the read logged.
-// report refuses a torn or broken ledger loudly. Cell ledger: tests/matrix/LEDGER.md.
+// Cell ledger: tests/matrix/LEDGER.md.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -40,25 +39,6 @@ fn feed(ledger: &std::path::Path, events: &[&str]) -> Result<(), String> {
 }
 
 #[test]
-fn c001_record_appends_chained_events_from_stdin() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = dir.path().join("ledger.jsonl");
-    feed(
-        &ledger,
-        &[
-            "{\"event\": \"init\"}",
-            "{\"event\": \"tools-call\", \"payload\": {\"method\": \"tools/call\"}}",
-        ],
-    )
-    .expect("record must succeed");
-    assert_eq!(
-        agentpcap_ledger::verify_chain(&ledger).unwrap(),
-        2,
-        "the ledger carries two chained records"
-    );
-}
-
-#[test]
 fn c002_report_prints_records_and_logs_the_read() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
@@ -78,27 +58,4 @@ fn c002_report_prints_records_and_logs_the_read() {
     let entry = access.lines().last().expect("access log entry");
     let v: serde_json::Value = serde_json::from_str(entry).unwrap();
     assert_eq!(v["actor"].as_str().unwrap(), "agentpcap.report");
-}
-
-#[test]
-fn c003_report_refuses_a_torn_ledger() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = dir.path().join("ledger.jsonl");
-    feed(&ledger, &["{\"event\": \"init\"}"]).expect("record");
-
-    // simulate a crash mid-append
-    let existing = std::fs::read_to_string(&ledger).unwrap();
-    std::fs::write(&ledger, format!("{}{{\"event\": \"t", existing)).unwrap();
-
-    let out = bin()
-        .args(["report", "--ledger"])
-        .arg(&ledger)
-        .output()
-        .expect("agentpcap binary");
-    assert!(!out.status.success(), "report must fail loudly");
-    assert!(
-        out.stdout.is_empty(),
-        "a torn ledger produces no records on stdout"
-    );
-    assert!(!out.stderr.is_empty(), "the failure states itself on stderr");
 }
