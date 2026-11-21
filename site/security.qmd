@@ -22,8 +22,9 @@ material live in [SECURITY.md](https://github.com/shsingh/agentpcap/blob/main/SE
   of prior segments, or access-log under-capture.
 - **eBPF surface regression** — unpinned probe bytecode, capability
   escalation beyond the documented set.
-- **Data-minimization regression** — arguments, prompts, or payload
-  content stored by default; attributed mode on without explicit opt-in.
+- **Capture-scope regression** — the tap observing outside its
+  configured scope: hosts, transports, or content classes beyond the
+  documented tool message.
 - **Classification misstatement** — verdicts or evidence that misstate
   an observation.
 

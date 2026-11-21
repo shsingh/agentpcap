@@ -16,8 +16,8 @@ implementation starts with the workspace skeleton and the stdio class.
 
 | Gate | Scenario | Measures |
 |---|---|---|
-| AG-0.1 | one lab host, one stdio MCP client and server | ledger chain verifies after rotation; no path writes; zero arguments stored |
-| AG-0.2 | the fleet plus remote Streamable HTTP and one attributed-mode host | M003 coverage matrix; M004 capability drift |
+| AG-0.1 | one lab host, one stdio MCP client and server | ledger chain verifies after rotation; no path writes; tool messages present in the ledger |
+| AG-0.2 | the fleet plus remote Streamable HTTP, attributed mode active on every host | M003 coverage matrix; M004 capability drift |
 | AG-1.0 | full fleet with seeded shadow deployments | M001 recall, M002 overhead delta, M003 full matrix, M004 fidelity, M005 triage precision, M006 handoff latency — gate rule: M001 passing with M003 at M002 cost |
 
 ## AG-0.1 — MVP: the stdio class, end to end

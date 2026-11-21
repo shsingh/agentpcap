@@ -43,7 +43,7 @@ changes, and what the continuous-integration gates enforce.
 
 ## Security-sensitive changes
 
-Extra care applies to the data-minimization defaults and the ledger
+Extra care applies to the capture-scope boundaries and the ledger
 contract ([SECURITY.md](SECURITY.md) carries the full posture):
 
 - **Vulnerabilities do not go into public issues.** Follow
@@ -56,8 +56,9 @@ contract ([SECURITY.md](SECURITY.md) carries the full posture):
 - **Event schema and ledger format:** field removals or semantic
   changes break the contract. The change needs a `schema_version` bump
   and a migration note.
-- **Data minimization:** stored-by-default arguments, prompts, or
-  payload content is a defect, not a preference.
+- **Capture scope:** the tap observing beyond its configured scope —
+  hosts, transports, or content classes beyond the documented tool
+  message — is a defect, not a preference.
 - **Capability set:** the documented eBPF capability set is the
   published posture; a change that silently adds privileges needs its
   own stated justification.

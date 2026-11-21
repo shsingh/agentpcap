@@ -61,7 +61,7 @@ limit, and the answer agentpcap gives for that limit.
 |---|---|---|---|
 | [agentgateway](https://agentgateway.dev) (Linux Foundation) — Rust proxy for MCP and A2A | protocol-aware routing and policy for routed traffic; `tools/list` and `tools/call` tracing | in-path by configuration: traffic that does not traverse it is invisible | the tap sees the bypass flows; agentgateway's exports feed the same ledger (spec §11) |
 | In-path enterprise gateways (Netskope Agentic Broker, Palo Alto AI Gateway class) | MCP visibility, catalogs, enforcement at the Zero Trust exchange | same in-path boundary; coverage ends where routing ends | out-of-path capture on the host; the bypass class is the named target |
-| [Microsoft Global Secure Access MCP logging](https://learn.microsoft.com/en-us/entra/global-secure-access/how-to-view-model-context-protocol-logging) | deep-packet-inspection MCP identification with session records | requires TLS inspection; local stdio servers invisible (no network footprint) | opaque mode with no TLS termination required; the pipe collector observes stdio directly |
+| [Microsoft Global Secure Access MCP logging](https://learn.microsoft.com/en-us/entra/global-secure-access/how-to-view-model-context-protocol-logging) | deep-packet-inspection MCP identification with session records | requires TLS inspection on the network path; local stdio servers invisible (no network footprint) | plaintext captured at the host TLS boundary (attributed by default); the pipe collector observes stdio directly |
 | [Cloudflare Gateway MCP detection](https://blog.cloudflare.com/mcp-security-updates) (`is_mcp` selector) | header-heuristic classification (`MCP-Protocol-Version` positive signal); requires decryption on the path | absence of the header proves nothing; legacy and early-session traffic escape; decryption required | classification from protocol semantics in the reassembler; the header is recorded evidence, never the gate |
 | [AgentSight](https://github.com/eunomia-bpf/agentsight) — eBPF observability at the system boundary | uprobes on TLS libraries, process lineage, under-3% overhead | scoped to known agent processes and the single host; no MCP/A2A session semantics; no ledger | cgroup-filtered capture plus full session reassembly; the ledger is the product, not a dashboard |
 | [Pixie](https://docs.px.dev/about-pixie/pixie-ebpf) / [Cilium Hubble](https://github.com/cilium/hubble) | generic eBPF L7 visibility: HTTP, DNS, databases, Kafka | fixed protocol table with no MCP row; a tool call is another HTTP transaction | protocol semantics as a first-class layer over the same proven capture mechanics |
@@ -86,9 +86,9 @@ capabilities, when.
   handoffs; anything agent-shaped but unattributed becomes a
   first-class unidentified-flow event with probing leads.
 - **the flow ledger** — JSON Lines, append-only, hash-chained (`prev`
-  field), access-logged. Tool names and capability fingerprints are
-  stored; arguments and payloads are not. Rotation preserves the
-  prefix; no index is built.
+  field), access-logged. Tool messages ride the record: method,
+  arguments and result. Retention and redaction are operator settings;
+  rotation preserves the prefix; no index is built.
 - **gate handoff** — the event stream feeds a criteria gate; policy is
   the operator's own declared criteria, verified on the stream.
 
@@ -173,7 +173,7 @@ export surfaces. Current phase: evaluation fleet build.
   ([private advisory](https://github.com/shsingh/agentpcap/security/advisories/new)).
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 - Architecture decisions live in [`docs/adr/`](docs/adr/0000-architecture-decision-records.md);
-  ADR-0001 records the read-only invariant, the opaque default, the
+  ADR-0001 records the read-only invariant, the attributed default, the
   Rust choice and the licence posture.
 
 **Engineering standard — harness before capability:** every behavioural

@@ -20,17 +20,19 @@ Scenario: one lab host, one MCP client, one local MCP server launched
 over stdio. The pipe collector captures the JSON-RPC frames; the ledger
 appends; `report` answers "who called what with which capabilities".
 
-- Coverage: the pipe class, opaque mode, one event schema, four CLI
+- Coverage: the pipe class, attributed capture with tool messages
+  recorded (method, arguments, results), one event schema, four CLI
   subcommands' `record` and `report` paths.
-- Measures: ledger chain verifies after rotation (M004 partial); no path
-  writes (the read-only invariant test); zero arguments stored.
+- Measures: the ledger chains and verifies after rotation (M004
+  partial); no path writes (the read-only invariant test); tool
+  messages present in the ledger.
 - Evidence: the ledger excerpt, the report output, the conformance
   fixtures, posted in the release.
 
 ### AG-0.2 — the wire class and both modes
 
 Scenario: the same fleet plus remote MCP servers over Streamable HTTP
-with TLS, and one attributed-mode host.
+with TLS, attributed mode active by default on every host.
 
 - Coverage: socket collector, TLS-boundary collector, session
   reassembly, unidentified-flow events, `diff` and `export`, the

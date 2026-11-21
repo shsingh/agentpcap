@@ -35,9 +35,10 @@ High-value vulnerability classes here:
   unverified probe bytecode, capability escalation beyond the
   documented set, or probe programs that observe more than the
   specification scopes.
-- **Data-minimization regression** — tool arguments, prompts, payload
-  content, or credentials stored by default, or attributed mode
-  enabled without explicit opt-in.
+- **Capture-scope regression** — the tap observing outside its
+  configured scope: hosts, transports, or content classes beyond the
+  documented tool message; content beyond redaction or retention
+  settings; credentials stored anywhere in the ledger.
 - **Classification misstatement** — verdicts or evidence fields that
   misstate an observation, including false positives driven by catalog
   lookups the specification excludes.
@@ -56,8 +57,8 @@ users: the Cyber Security Act 2024 (Cth) and Criminal Code Act 1995
   set.
 - No capture material is ever committed. Fixtures use synthesized
   traffic and clearly-labelled throwaway material. The project's own
-  defaults (no arguments stored, opaque mode by default) are part of
-  this contract.
+  defaults (attributed capture with tool messages recorded; retention
+  and redaction as operator settings) are part of this contract.
 
 ## How this repository maintains security hygiene
 
