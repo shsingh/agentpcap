@@ -42,7 +42,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
 
     // the server (a child of the tap's parent chain: the tap is its
     // sibling — the server's parent is this test process)
-    let server = Command::new("sh")
+    let mut server = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../eval/scenario/mcp-server.sh")
         .arg(&f1)
         .arg(&f2)
@@ -54,7 +54,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
     let _server_wait = server.wait().expect("server exits when the fifo closes");
 
     // the client: another child of this test process
-    let client = Command::new("sh")
+    let mut client = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../eval/scenario/scenario-client.sh")
         .arg(&f1)
         .arg(&f2)
