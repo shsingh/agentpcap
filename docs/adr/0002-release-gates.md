@@ -12,7 +12,11 @@ measurements (M001 to M006); this record binds them to release gates.
 
 ## Decision
 
-Three gates, each with its scenario set and its measurement:
+Three gates, each with its scenario set and its measurement. The gate
+identifier carries the project abbrev (`AG` = agentpcap, after the same
+convention as `G` for a gap and `M` for a measurement) and the release
+track number: AG-0.1 and AG-0.2 are pre-1.0 build gates, AG-1.0 is the
+evaluation gate that decides the project's public claims.
 
 ### AG-0.1 — MVP: the stdio class, end to end
 
