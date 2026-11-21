@@ -116,3 +116,4 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     let _ = child.wait().expect("child exits after its sleep");
 }
 
+
