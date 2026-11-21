@@ -81,14 +81,20 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
     let own = std::process::id() as u64;
-    let srv = server_pid as u64;
     let client: Vec<&serde_json::Value> = recs
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
+    // the reply writer's pid may differ by one from the spawn pid under
+    // this kernel (the fork/exec assignment) — select the replies by
+    // their shape: a jsonrpc result on the response side
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| r["pid"].as_u64() == Some(srv))
+        .filter(|r| {
+            r["pid"].as_u64() != Some(own)
+                && r["payload"].is_object()
+                && r["payload"]["result"].is_object()
+        })
         .collect();
     eprintln!(
         "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
@@ -145,3 +151,4 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
     assert!(answer.contains("hello-from-read"), "the report lists the tool result");
 }
+
