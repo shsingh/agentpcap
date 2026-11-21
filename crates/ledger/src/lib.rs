@@ -205,7 +205,7 @@ impl LedgerReader {
         log.push(".access.log");
         let entry = json!({
             "actor": actor,
-            "ts": rfc3339_now(),
+            "ts": now_rfc3339(),
             "scope": path.display().to_string(),
         });
         let mut f = OpenOptions::new()
@@ -235,7 +235,7 @@ impl LedgerReader {
 }
 
 /// Current UTC time as an RFC 3339 string, std-only.
-fn rfc3339_now() -> String {
+pub fn now_rfc3339() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

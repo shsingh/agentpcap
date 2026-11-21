@@ -68,6 +68,7 @@ it belongs to its base case.
 | C001 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `record --ledger P` appends JSON Lines from stdin; exit 0; two chained records verified | GREEN on `feat/2026.01-alpha1` |
 | C002 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report --ledger P` prints the records; the read lands in the access log as `actor = agentpcap.report` | GREEN on `feat/2026.01-alpha1` |
 | C003 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report` on a torn ledger: nonzero exit, no records on stdout, the failure states itself on stderr | GREEN on `feat/2026.01-alpha1` |
+| C100 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the tap: probe loop, pid-space calibration, classifier and ledger in one run — a real MCP frame lands `verdict=mcp method=tools/call` and the shapeless line lands `agent-unidentified`; 52K host writes processed in one 3 s window with the queue drained live | GREEN on `feat/2026.01-tap`; wire sample payload widened 32 -> 128 bytes (both sides, const-locked) so the method name rides the sample |
 
 ## Green gate rule
 
