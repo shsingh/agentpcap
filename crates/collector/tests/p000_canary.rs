@@ -26,10 +26,10 @@ fn p000_canary_loads_and_emits_in_vm() {
     prog.attach("sys_enter_write", 0)
         .expect("attach to sys_enter_write failed");
 
-    let mut events = bpf
+    let mut events: aya::maps::RingBuf = bpf
         .take_map("events")
         .expect("events map missing")
-        .into_ring_buf()
+        .try_into()
         .expect("events map is not a ring buffer");
     let mut seen = 0usize;
     let deadline = Instant::now() + Duration::from_secs(2);
