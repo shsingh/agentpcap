@@ -292,6 +292,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
+    unsafe {
+        let ok = CANARY.get(SLOT_PUSH_OK, 0).unwrap_or(0);
+        let fail = CANARY.get(SLOT_PUSH_FAIL, 0).unwrap_or(0);
+        'let _ = std::fs::write(
+        format!("{}.push-receipt", ledger_path.display()),
+        format!("push_ok={ok} push_fail={fail}\n"),
+    );
+    eprintln!("agentpcap tap: push_ok={ok} push_fail={fail}");
+    }
     ExitCode::SUCCESS
 }
 
