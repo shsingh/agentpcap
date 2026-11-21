@@ -41,11 +41,17 @@ pub fn verdict(data: &str) -> &'static str {
 
 /// Run every `*.jsonl` fixture in `dir` against its `.expect` verdict.
 pub fn run(dir: &Path) -> Result<Vec<FixtureResult>, std::io::Error> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".jsonl"))
-        .collect();
+    let mut names: Vec<String> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".jsonl"))
+            .collect(),
+        Err(e) => {
+            eprintln!("conformance: read_dir({}) failed: {e}", dir.display());
+            return Err(e);
+        }
+    };
     names.sort();
     let mut out = Vec::new();
     for f in names {
