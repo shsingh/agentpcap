@@ -1,13 +1,10 @@
-//! Collector crate: the C003 pipe collector's userspace match contract.
+//! Collector crate: the C003 pipe collector's userspace half.
 //!
-//! The eBPF probe (aya, `syscalls:sys_enter_write` plus `sys_enter_writev`)
-//! feeds one pipe sample per event. This crate holds the userspace half of
-//! spec docs/spec.md section 5: the verdict decision for one sample.
-//!
-//! RED state: `classify_pipe_sample` is `unimplemented!()` on purpose. The
-//! RED test draft `tests/p001_red.rs` fails on the missing match function
-//! only. The alpha1 collector slice implements the function body and turns
-//! the draft green.
+//! The eBPF probe (`syscalls:sys_enter_write` plus `sys_enter_writev`)
+//! pushes one [`PipeSample`] per system write into the `pipe-events`
+//! queue. This crate holds the userspace half of spec docs/spec.md
+//! section 5: the wire format and the verdict decision for one sample,
+//! and section 6: the classification.
 
 /// The record verdict for one captured pipe sample, per spec section 6.
 ///
@@ -23,6 +20,33 @@ pub enum Decision {
     /// The sample carries no agent shape: verdict `other`.
     Other,
 }
+
+/// The wire format of one queued pipe write sample.
+///
+/// Layout-locked at compile time on both sides: the probe push side and
+/// this crate. A change here is a wire-format change and lands with
+/// cells, never silently.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(8))]
+pub struct PipeSample {
+    /// The writing thread's process id.
+    pub pid: u32,
+    /// Reserved for the lineage ask (P003): the writer's parent pid.
+    pub ppid: u32,
+    /// Payload bytes carried in `first_bytes`.
+    pub len: u32,
+    pad: [u8; 4],
+    /// The first payload bytes of the write buffer.
+    pub first_bytes: [u8; 32],
+}
+
+// SAFETY: the struct is POD (fixed size, no padding-sensitive fields in
+// use) and the wire layout is const-locked; aya reads it by value.
+unsafe impl aya::Pod for PipeSample {}
+
+pub const PAYLOAD_BYTES_CAP: usize = 32;
+
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);
 
 const SAMPLE_BYTES_CAP: usize = 256;
 

@@ -26,6 +26,7 @@ the commit and the gate that ran in the `agentpcap-build-dev` VM
 | Cell | Spec anchor | Assertion | Status |
 |------|-------------|-----------|--------|
 | P000 | `docs/spec.md#5-collectors` | the eBPF canary: object builds for `bpfel-unknown-none`, loads into the build-VM kernel, attaches `syscalls:sys_enter_write`, and the bpf array counter is read back greater than zero in-process | RED (object absent), GREEN on `feat/2026.01-alpha1` |
+| P002 | `docs/spec.md#5-collectors` | the emit path: the probe pushes one sample per write into the `pipe_events` queue (pid, ppid, len, first payload bytes) and the userspace reads its own payload back through the typed queue | RED (queue map absent), GREEN on `feat/2026.01-alpha1`; receipts `invokes=24 read_fail=0 push_ok=24` |
 | P001 | `docs/spec.md#5-collectors` | userspace match: JSON-RPC framing over a pipe sample -> `mcp`; non-JSON -> `other`; unknown agent framing -> `agent-unidentified` | RED draft on main (8 of 8 failing on the unimplemented match), implementation pending |
 
 ### P000 design receipts
