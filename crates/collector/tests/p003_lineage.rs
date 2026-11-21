@@ -42,7 +42,7 @@ fn p003_child_write_carries_the_parent_pid() {
         .attach("sched", "sched_process_fork")
         .expect("attach to sched_process_fork failed");
 
-    let queue: aya::maps::Queue<_, PipeSample> = bpf
+    let mut queue: aya::maps::Queue<_, PipeSample> = bpf
         .take_map("pipe_events")
         .expect("pipe_events map missing")
         .try_into()
