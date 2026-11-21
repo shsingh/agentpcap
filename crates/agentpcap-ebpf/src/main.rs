@@ -6,7 +6,10 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::helpers::{bpf_get_current_pid_tgid, bpf_probe_read_user_buf};
+use aya_ebpf::EbpfContext;
+use aya_ebpf::helpers::{
+    bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user_buf,
+};
 use aya_ebpf::macros::{map, tracepoint};
 use aya_ebpf::maps::{Array, LruHashMap, Queue};
 use aya_ebpf::programs::TracePointContext;
