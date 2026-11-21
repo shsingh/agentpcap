@@ -7,7 +7,7 @@
 // framing and the tools/call, and the excerpt rides the receipt.
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -30,21 +30,38 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .stderr(Stdio::null())
         .spawn()
         .expect("agentpcap binary");
+    eprintln!("c101 own pid = {}", std::process::id());
     std::thread::sleep(Duration::from_millis(1200));
 
-    let server_out = dir.path().join("server.log");
-
-    // the MCP server: a child of this test process, frames on stdin,
-    // replies on the captured stdout
+    // the MCP server: a child of this test process, frames on its
+    // piped stdin, replies on its piped stdout — one real pipe per
+    // channel; the shell itself is the writer for both (no redirection
+    // forks), so the tap resolves its live fds to the channel inodes
     let mut server = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/mcp-server.sh")
         .stdin(Stdio::piped())
-        .stdout(Stdio::from(std::fs::File::create(&server_out).unwrap()))
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
+    let mut server_out = server.stdout.take().unwrap();
     let mut server_in = server.stdin.take().unwrap();
+    // drain the reply pipe concurrently: the responses = the server's
+    // stdout writes on a real pipe the tap records by inode
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        for l in std::io::BufReader::new(&mut server_out).lines() {
+            match l {
+                Ok(line) => {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                Err(_) => break,
+            }
+        }
+        text
+    });
     // wait out the tap's calibration: the ledger writer only exists after it
     std::thread::sleep(Duration::from_millis(1200));
 
@@ -63,18 +80,15 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     }
     drop(server_in);
     let _sw = server.wait().expect("server exits on eof");
+    let replied = reader.join().expect("the reply reader joins");
 
     // give the tap time to drain the last samples
     let _ts = tap.wait().expect("tap exits at its deadline");
 
     // the server's transcript: three answers
-    let replied = std::fs::read_to_string(&server_out).unwrap();
     eprintln!("c101 receipt: server_pid={server_pid} replies={}", replied.lines().count());
-    assert_eq!(replied.lines().count(), 3, "three answers on stdout");
+    assert_eq!(replied.lines().count(), 3, "three answers on the reply pipe");
 
-    // the ledger answers, record by record: the client pid carries the
-    // three framed requests (mcp, ids 1/2/3); the server pid carries
-    // the three replies (ids 1/2/3, the result text intact)
     let text = std::fs::read_to_string(&ledger).unwrap();
     let recs: Vec<serde_json::Value> = text
         .lines()
@@ -85,23 +99,22 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
-    // the reply writer's pid may differ by one from the spawn pid under
-    // this kernel (the fork/exec assignment) — select the replies by
-    // their shape: a jsonrpc result on the response side
+    // the reply records: the reply writer can die inside the tap's pop
+    // window (dash forks even for bare builtins in a loop), so its
+    // records key `peer=unresolved`. The tie to this scenario is the
+    // payload set: the exact ids, the scenario's server name, the exact
+    // tool list and the exact result text. An ambient exchange carries
+    // different payloads and cannot pass the asserts.
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| {
-            r["pid"].as_u64() != Some(own)
-                && r["payload"].is_object()
-                && r["payload"]["result"].is_object()
-        })
+        .filter(|r| r["payload"]["result"].is_object())
         .collect();
     eprintln!(
         "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
         recs.len(),
         client.len(),
         server.len(),
-        recs.iter().map(|r| r["pid"].as_u64()).collect::<Vec<_>>(),
+        recs.iter().map(|r| format!("{}/{}", r["pid"], r["peer"])).collect::<Vec<_>>(),
         client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
     );
     for (meth, id) in [
