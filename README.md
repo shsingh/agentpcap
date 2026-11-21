@@ -136,6 +136,9 @@ renders to text, HTML and PDF artifacts in CI.
 | Research note (the survey behind the design) | [`docs/agentpcap-paper.md`](docs/agentpcap-paper.md) — rendered PDF on [the site](https://agentpcap.kalatopi.sh/) |
 | Source ledger (every citation, grouped) | [`docs/references.md`](docs/references.md) |
 | Foundational decisions | [`docs/adr/0001-foundational-decisions.md`](docs/adr/0001-foundational-decisions.md) — index at [`docs/adr/0000-architecture-decision-records.md`](docs/adr/0000-architecture-decision-records.md) |
+| Release gates | [`docs/adr/0002-release-gates.md`](docs/adr/0002-release-gates.md) |
+| Build board | [agentpcap — Roadmap & Build Board](https://github.com/users/shsingh/projects/7) — 23 cards, one per build item, grouped by gate |
+| Roadmap (the gates as issues) | [`/roadmap.html`](https://agentpcap.kalatopi.sh/roadmap.html) on the site |
 
 ## Deployment
 

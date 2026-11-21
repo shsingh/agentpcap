@@ -25,6 +25,8 @@ website:
         text: Intro
       - href: design.qmd
         text: Design
+      - href: roadmap.qmd
+        text: Roadmap
       - href: governance.qmd
         text: Governance
     right:
