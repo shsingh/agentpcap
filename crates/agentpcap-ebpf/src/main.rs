@@ -32,9 +32,6 @@ const PAYLOAD_BYTES_CAP: u32 = 32;
 #[map(name = "pipe_events")]
 static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
 
-#[map(name = "events")]
-static mut CANARY: Array<u64> = Array::with_max_entries(8, 0);
-
 const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;
 const SLOT_PUSH_OK: u32 = 2;
@@ -43,6 +40,11 @@ const SLOT_FORK_INVOKE: u32 = 4;
 const SLOT_INSERT_OK: u32 = 5;
 const SLOT_INSERT_FAIL: u32 = 6;
 const SLOT_LOOKUP_HIT: u32 = 7;
+const SLOT_FORK_PUSH_OK: u32 = 8;
+const SLOT_FORK_PUSH_FAIL: u32 = 9;
+
+#[map(name = "events")]
+static mut CANARY: Array<u64> = Array::with_max_entries(10, 0);
 
 #[map(name = "lineage")]
 static mut LINEAGE: LruHashMap<u32, u32> = LruHashMap::with_max_entries(8192, 0);
@@ -98,7 +100,13 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
                 b
             },
         };
-        let _ = EVENTS.push(&pair, 0);
+        if EVENTS.push(&pair, 0).is_ok() {
+            if let Some(slot) = CANARY.get_ptr_mut(SLOT_FORK_PUSH_OK) {
+                *slot += 1;
+            }
+        } else if let Some(slot) = CANARY.get_ptr_mut(SLOT_FORK_PUSH_FAIL) {
+            *slot += 1;
+        }
         if LINEAGE.insert(&child, &parent, 0).is_ok() {
             if let Some(slot) = CANARY.get_ptr_mut(SLOT_INSERT_OK) {
                 *slot += 1;

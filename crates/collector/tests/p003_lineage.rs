@@ -116,7 +116,7 @@ fn p003_child_write_carries_the_parent_pid() {
         .expect("canary counter map missing")
         .try_into()
         .expect("canary map is not an array");
-    let counters: Vec<u64> = (0..8)
+    let counters: Vec<u64> = (0..10)
         .map(|i| counters.get(&i, 0).unwrap_or(0))
         .collect();
 
