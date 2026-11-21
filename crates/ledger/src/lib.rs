@@ -66,11 +66,19 @@ fn check(path: &Path) -> Result<(usize, String), LedgerError> {
     }
     let text = String::from_utf8_lossy(&data);
     let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    // Line 0 is genesis (empty `prev`) or a carried hash from a closed
+    // segment after rotation. In-file chaining is enforced from line 1.
     let mut expected = String::new();
     for (i, line) in lines.iter().enumerate() {
         let v: Value = serde_json::from_str(line).map_err(|_| LedgerError::Format(i))?;
         let got = v["prev"].as_str().unwrap_or_default().to_string();
-        if got != expected {
+        if i == 0 {
+            let valid_carry = got.len() == 16 && got.chars().all(|c| c.is_ascii_hexdigit());
+            if !got.is_empty() && !valid_carry {
+                return Err(LedgerError::ChainBreak(0));
+            }
+            expected = got;
+        } else if got != expected {
             return Err(LedgerError::ChainBreak(i));
         }
         expected = trunc(line);
