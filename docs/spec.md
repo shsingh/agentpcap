@@ -76,17 +76,17 @@ agentpcap is not a gateway and does not sit in any path. It is not a configurati
 
 The instrument is one binary with six components:
 
-- **C1 — socket collector**: eBPF programs observe send and receive at the socket boundary, filtered by cgroup and process lineage; emits flow records.
+- **C001 — socket collector**: eBPF programs observe send and receive at the socket boundary, filtered by cgroup and process lineage; emits flow records.
 
-- **C2 — TLS-boundary collector**: uprobes on the host's TLS libraries capture plaintext before encryption; active only in attributed mode.
+- **C002 — TLS-boundary collector**: uprobes on the host's TLS libraries capture plaintext before encryption; active only in attributed mode.
 
-- **C3 — pipe collector**: observes reads and writes on the client-server stdio pipes; emits frame records of the same shape.
+- **C003 — pipe collector**: observes reads and writes on the client-server stdio pipes; emits frame records of the same shape.
 
-- **R — reassembler**: a userspace state machine turns frame streams into session events (Section 6).
+- **Reassembler**: a userspace state machine turns frame streams into session events (Section 6).
 
-- **L — ledger writer**: appends session events to the per-host (or per-node) ledger (Section 7).
+- **Ledger writer**: appends session events to the per-host (or per-node) ledger (Section 7).
 
-- **O — operator CLI**: `record`, `report`, `diff`, `export` subcommands (Section 9).
+- **Operator CLI**: `record`, `report`, `diff`, `export` subcommands (Section 9).
 
 The data path:
 
@@ -160,7 +160,7 @@ The ledger is a per-host (and per-node) append-only file of event records in JSO
 
 ## 8. Modes
 
-Opaque mode is the default. Opaque-mode capture MUST NOT require TLS termination of any session, and operates on transport features, headers visible before encryption, DNS and SNI evidence, and pipe plaintext. Attributed mode is opt-in per host boundary: the TLS-boundary collector (C2) captures plaintext at the host's own TLS libraries through uprobes, in the demonstrated manner of Pixie and AgentSight. The mode that produced each event MUST be recorded in the event's `mode` field. A build MUST NOT enable attributed mode by default and MUST document its own capability requirements.
+Opaque mode is the default. Opaque-mode capture MUST NOT require TLS termination of any session, and operates on transport features, headers visible before encryption, DNS and SNI evidence, and pipe plaintext. Attributed mode is opt-in per host boundary: the TLS-boundary collector (C002) captures plaintext at the host's own TLS libraries through uprobes, in the demonstrated manner of Pixie and AgentSight. The mode that produced each event MUST be recorded in the event's `mode` field. A build MUST NOT enable attributed mode by default and MUST document its own capability requirements.
 
 ## 9. Operator CLI
 
