@@ -9,18 +9,18 @@ The live board carries the same set of cards:
 
 ## Current phase
 
-2027.01-alpha1 build-out. The specification is in force and renders in CI; the
+2026.12-alpha1 build-out. The specification is in force and renders in CI; the
 implementation starts with the workspace skeleton and the stdio class.
 
 ## Release gates
 
 | Gate | Scenario | Measures |
 |---|---|---|
-| 2027.01-alpha1 | one lab host, one stdio MCP client and server | ledger chain verifies after rotation; no path writes; tool messages present in the ledger |
-| 2027.01-alpha2 | the fleet plus remote Streamable HTTP, attributed mode active on every host | M003 coverage matrix; M004 capability drift |
-| 2027.01-rc1 | full fleet with seeded shadow deployments | M001 recall, M002 overhead delta, M003 full matrix, M004 fidelity, M005 triage precision, M006 handoff latency — gate rule: M001 passing with M003 at M002 cost |
+| 2026.12-alpha1 | one lab host, one stdio MCP client and server | ledger chain verifies after rotation; no path writes; tool messages present in the ledger |
+| 2026.12-alpha2 | the fleet plus remote Streamable HTTP, attributed mode active on every host | M003 coverage matrix; M004 capability drift |
+| 2026.12-rc1 | full fleet with seeded shadow deployments | M001 recall, M002 overhead delta, M003 full matrix, M004 fidelity, M005 triage precision, M006 handoff latency — gate rule: M001 passing with M003 at M002 cost |
 
-## 2027.01-alpha1 — MVP: the stdio class, end to end
+## 2026.12-alpha1 — MVP: the stdio class, end to end
 
 | Issue | Title | Labels |
 |---|---|---|
@@ -29,9 +29,9 @@ implementation starts with the workspace skeleton and the stdio class.
 | [#12](https://github.com/shsingh/agentpcap/issues/12) | feat(ledger): append-only JSONL writer with prev-hash chain and rotation | ledger,mvp |
 | [#13](https://github.com/shsingh/agentpcap/issues/13) | feat(cli): record and report subcommands | cli,mvp |
 | [#14](https://github.com/shsingh/agentpcap/issues/14) | test(ledger): conformance fixtures for chain, rotation, tamper, access log | ledger,mvp,test |
-| [#31](https://github.com/shsingh/agentpcap/issues/31) | release: 2027.01-alpha1 gate | mvp,release-gate |
+| [#31](https://github.com/shsingh/agentpcap/issues/31) | release: 2026.12-alpha1 gate | mvp,release-gate |
 
-## 2027.01-alpha2 — The wire class and both modes
+## 2026.12-alpha2 — The wire class and both modes
 
 | Issue | Title | Labels |
 |---|---|---|
@@ -45,7 +45,7 @@ implementation starts with the workspace skeleton and the stdio class.
 | [#22](https://github.com/shsingh/agentpcap/issues/22) | feat(deploy): per-node DaemonSet manifest with node-scope ledger | deploy |
 | [#23](https://github.com/shsingh/agentpcap/issues/23) | feat: coexistence export consumption with the dedupe key | ledger |
 
-## 2027.01-rc1 — The evaluation gate
+## 2026.12-rc1 — The evaluation gate
 
 | Issue | Title | Labels |
 |---|---|---|
@@ -56,7 +56,7 @@ implementation starts with the workspace skeleton and the stdio class.
 | [#28](https://github.com/shsingh/agentpcap/issues/28) | perf(eval): M004 ledger fidelity on capability drift | eval,performance |
 | [#29](https://github.com/shsingh/agentpcap/issues/29) | perf(eval): M005 unidentified-flow triage precision | eval,performance |
 | [#30](https://github.com/shsingh/agentpcap/issues/30) | perf(eval): M006 gate handoff latency against the 2-second budget | eval,performance |
-| [#32](https://github.com/shsingh/agentpcap/issues/32) | release: 2027.01-rc1 gate | release-gate |
+| [#32](https://github.com/shsingh/agentpcap/issues/32) | release: 2026.12-rc1 gate | release-gate |
 
 ## The measurement set
 

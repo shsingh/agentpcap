@@ -17,11 +17,11 @@ releases under the project's release convention: a calendar version
 (`YYYY.01`) with `alpha` and `rc` qualifiers, then general availability —
 the same sequence the maintainer's other projects shipped (rc suffixes
 while the gate scenarios run, GA once they pass). The MVP gate
-releases as `2027.01-alpha1`, the wire-class gate as `2027.01-alpha2`,
-the evaluation gate as `2027.01-rc1`; the general-availability tag is
-`2027.01`.
+releases as `2026.12-alpha1`, the wire-class gate as `2026.12-alpha2`,
+the evaluation gate as `2026.12-rc1`; the general-availability tag is
+`2026.12`.
 
-### 2027.01-alpha1 — MVP: the stdio class, end to end
+### 2026.12-alpha1 — MVP: the stdio class, end to end
 
 Scenario: one lab host, one MCP client, one local MCP server launched
 over stdio. The pipe collector captures the JSON-RPC frames; the ledger
@@ -36,7 +36,7 @@ appends; `report` answers "who called what with which capabilities".
 - Evidence: the ledger excerpt, the report output, the conformance
   fixtures, posted in the release.
 
-### 2027.01-alpha2 — the wire class and both modes
+### 2026.12-alpha2 — the wire class and both modes
 
 Scenario: the same fleet plus remote MCP servers over Streamable HTTP
 with TLS, attributed mode active by default on every host.
@@ -50,7 +50,7 @@ with TLS, attributed mode active by default on every host.
 - Evidence: the coverage matrix, the drift diff, the deployment
   manifests, in the release.
 
-### 2027.01-rc1 — the evaluation gate
+### 2026.12-rc1 — the evaluation gate
 
 Scenario: the full lab fleet with seeded shadow deployments, measured
 against the published baselines of the survey.
@@ -73,6 +73,6 @@ against the published baselines of the survey.
   scenarios pass and their evidence posts.
 - The evaluation harness owns the measurement surfaces; the binary
   exposes counters (spec, Section 13) and nothing else.
-- The gates map to the project milestones `2027.01-alpha1`,
-`2027.01-alpha2` and `2027.01-rc1`; the
+- The gates map to the project milestones `2026.12-alpha1`,
+`2026.12-alpha2` and `2026.12-rc1`; the
   roadmap page carries the live issue mapping.
