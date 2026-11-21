@@ -42,7 +42,7 @@ fn feed(ledger: &std::path::Path, events: &[&str]) -> Result<(), String> {
 fn c003_report_refuses_a_torn_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
-    feed(&ledger, ["{\"event\": \"init\"}"]).expect("record");
+    feed(&ledger, &["{\"event\": \"init\"}"]).expect("record");
 
     // simulate a crash mid-append
     let existing = std::fs::read_to_string(&ledger).unwrap();

@@ -42,7 +42,7 @@ fn feed(ledger: &std::path::Path, events: &[&str]) -> Result<(), String> {
 fn c002_report_prints_records_and_logs_the_read() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
-    feed(&ledger, ["{\"event\": \"init\"}", "{\"event\": \"tools-list\"}"]).expect("record");
+    feed(&ledger, &["{\"event\": \"init\"}", "{\"event\": \"tools-list\"}"]).expect("record");
 
     let out = bin()
         .args(["report", "--ledger"])
