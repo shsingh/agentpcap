@@ -91,7 +91,8 @@ fn p003_child_write_carries_the_parent_pid() {
 
     // Fork pair receipts: the last fork pairs the probe pushed.
     let mut forks_seen: Vec<String> = Vec::new();
-    for _ in 0..512 {
+    let mut raw_dumps: Vec<String> = Vec::new();
+    for _ in 0..4096 {
         match queue.pop(0) {
             Ok(s) => {
                 let prefix = String::from_utf8_lossy(&s.first_bytes[..(s.len as usize).min(8)])
@@ -99,6 +100,10 @@ fn p003_child_write_carries_the_parent_pid() {
                 if prefix == "forkpair" {
                     forks_seen
                         .push(format!("parent={} child={}", s.pid, s.ppid));
+                } else if s.pid == 0x0000f00d && s.len == 32 {
+                    let hex: Vec<String> =
+                        s.first_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                    raw_dumps.push(format!("n={} ctx={}", s.ppid, hex.join(" ")));
                 }
             }
             Err(_) => break,
@@ -154,11 +159,11 @@ fn p003_child_write_carries_the_parent_pid() {
         "p003 lineage map inverse: me {me} -> {:?}",
         parent_of_me
     );
-    if !found {
-        eprintln!("p003 fork pairs seen ({}):", forks_seen.len());
-        for l in forks_seen.iter().take(60) {
-            eprintln!("  {l}");
-        }
+    for l in forks_seen.iter().take(40) {
+        eprintln!("  forkpair {l}");
+    }
+    for l in raw_dumps.iter().take(12) {
+        eprintln!("  rawdump {l}");
     }
     assert!(
         found,

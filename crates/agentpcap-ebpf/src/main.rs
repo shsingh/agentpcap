@@ -63,6 +63,25 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
         Err(_) => return 0,
     };
     unsafe {
+        // Every 16th fork: dump the raw context onto the event queue so
+        // the userspace can decode the real field offsets.
+        let n: u64 = match CANARY.get_ptr_mut(SLOT_FORK_INVOKE).map(|s| *s) {
+            Some(v) => v,
+            None => 1,
+        };
+        if n % 16 == 0 {
+            let mut raw = PipeSample {
+                pid: 0x0000f00d,
+                ppid: n as u32,
+                len: 32,
+                pad: [0; 4],
+                first_bytes: [0u8; 32],
+            };
+            if bpf_probe_read_kernel(raw.first_bytes.as_mut_ptr().cast(), 32, ctx.as_ptr()).is_ok()
+            {
+                let _ = EVENTS.push(&raw, 0);
+            }
+        }
         // The fork pair also rides the event queue so the userspace can
         // ground-truth the offsets: pid carries the parent, ppid the child.
         let pair = PipeSample {
