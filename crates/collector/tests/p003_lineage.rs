@@ -99,6 +99,14 @@ fn p003_child_write_carries_the_parent_pid() {
         .map(|i| counters.get(&i, 0).unwrap_or(0))
         .collect();
 
+    // The lineage entry for the child, read back from the map.
+    let lineage: aya::maps::HashMap<_, u32, u32> = bpf
+        .take_map("lineage")
+        .expect("lineage map missing")
+        .try_into()
+        .expect("lineage map is not a hash map");
+    let parent_of_child = lineage.get(&child_pid, 0);
+
     // Raw sample dump for the diagnosis: every (pid, ppid, payload)
     // that surfaced, truncated to the write candidates.
     let mut seen: Vec<String> = Vec::new();
