@@ -163,8 +163,8 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         "all three events key one session"
     );
 
-    // the operator answers: `report` prints the records over the
-    // scenario ledger and logs the read (the alpha1 evidence output)
+    // the operator answers: the sessions view over the scenario ledger;
+    // the read logs (the access log's own cell rides C002)
     let out = bin()
         .args(["report", "--ledger"])
         .arg(&ledger)
@@ -176,18 +176,18 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .lines()
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
-    eprintln!(
-        "c101 report receipt: lines={} own={}",
-        answered.len(), own
-    );
-    let own_records = answered
-        .iter()
-        .filter(|v| v["pid"].as_u64() == Some(own))
-        .count();
+    eprintln!("c101 report receipt: sessions={}", answered.len());
+    assert_eq!(answered.len(), 1, "the report folds one session view line");
+    let view = &answered[0];
     assert_eq!(
-        own_records, 3,
-        "the report answers the three session events"
+        view["session_id"], session,
+        "the session view keys the scenario's session"
     );
-    assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
-    assert!(answer.contains("hello-from-read"), "the report lists the tool result");
+    assert_eq!(view["server"], "alpha1-server");
+    assert_eq!(view["cap_fingerprint"], fp);
+    assert_eq!(
+        view["tools"][0]["name"], "read",
+        "the discovered tool rides the session view"
+    );
+    assert_eq!(view["invocations"], 1, "the tool call counts");
 }

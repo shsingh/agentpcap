@@ -1,7 +1,10 @@
 // The agentpcap operator CLI. Normative source: `docs/spec.md#9-operator-cli`.
 // `record` appends JSON Lines events from stdin to the ledger; `report`
-// prints the records and logs the read; `tap` runs the eBPF probe loop
-// and appends the reassembled session events. All faces fail closed.
+// renders the sessions view and logs the read; `export` streams the gate
+// stream; `diff` names the capability drift from two report sets; `tap`
+// runs the eBPF probe loop and appends the reassembled session events.
+// All faces fail closed: exit 0 on success, 2 on misuse, 1 on a capture
+// error.
 
 use agentpcap_collector::{classify_pipe_sample, resolve_parent, Decision, ParentCache};
 use agentpcap_events::{Event, Mode, Verdict};
@@ -15,6 +18,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+mod diff;
+mod report;
+
 // The probe object is a build artifact of the standalone eBPF crate;
 // the workspace build order produces it before this crate compiles.
 static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
@@ -22,26 +28,66 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap export --ledger <path> [--follow]\n       agentpcap diff --before <ledger> --after <ledger>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+
+/// The flag walker: `--flag <value>` pairs and standalone `--flag`
+/// switches. Misuse is the caller's exit-2 face.
+fn flag(args: &[String], name: &str, takes_value: bool) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == name {
+            if takes_value {
+                return it.next().cloned();
+            }
+            return Some(String::new());
+        }
+    }
+    None
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match (args.first().map(String::as_str), args.get(2)) {
-        (Some("record"), Some(path)) => record(PathBuf::from(path)),
-        (Some("report"), Some(path)) => report(PathBuf::from(path)),
-        (Some("tap"), Some(path)) => tap(
-            PathBuf::from(path),
-            args.iter()
-                .position(|a| a == "--duration")
-                .and_then(|i| args.get(i + 1))
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(60),
-        ),
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
+    let verb = args.first().map(String::as_str);
+    match verb {
+        Some("record") => match flag(&args[1..], "--ledger", true) {
+            Some(path) => record(PathBuf::from(path)),
+            None => misuse(USAGE),
+        },
+        Some("report") => match flag(&args[1..], "--ledger", true) {
+            Some(path) => report(PathBuf::from(path)),
+            None => misuse(USAGE),
+        },
+        Some("export") => match flag(&args[1..], "--ledger", true) {
+            Some(path) => export(
+                PathBuf::from(path),
+                flag(&args[1..], "--follow", false).is_some(),
+            ),
+            None => misuse(USAGE),
+        },
+        Some("diff") => {
+            let before = flag(&args[1..], "--before", true);
+            let after = flag(&args[1..], "--after", true);
+            match (before, after) {
+                (Some(b), Some(a)) => diff(PathBuf::from(b), PathBuf::from(a)),
+                _ => misuse(USAGE),
+            }
         }
+        Some("tap") => match flag(&args[1..], "--ledger", true) {
+            Some(path) => tap(
+                PathBuf::from(path),
+                flag(&args[1..], "--duration", true)
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(60),
+            ),
+            None => misuse(USAGE),
+        },
+        _ => misuse(USAGE),
     }
+}
+
+fn misuse(_msg: &str) -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
 }
 
 fn record(path: PathBuf) -> ExitCode {
@@ -83,25 +129,96 @@ fn record(path: PathBuf) -> ExitCode {
 }
 
 fn report(path: PathBuf) -> ExitCode {
-    let reader = match LedgerReader::open(&path, "agentpcap.report") {
+    let view = match report::sessions(&path, "agentpcap.report") {
+        Ok(v) => v,
+        Err(e) => {
+            // a broken ledger's read fails: report states the failure
+            // on stderr and answers nothing on stdout
+            eprintln!("agentpcap report: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if print_sessions(view).is_err() {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn print_sessions(view: Vec<Value>) -> std::io::Result<()> {
+    report::print_sessions(view)
+}
+
+/// The gate stream: the ledger's events to stdout as JSON Lines, in
+/// lossless order; `--follow` keeps streaming the appends after the
+/// existing segment. The read logs as agentpcap.export.
+fn export(path: PathBuf, follow: bool) -> ExitCode {
+    let stdout = std::io::stdout();
+    let dump = |out: &mut std::io::StdoutLock, reader: &mut LedgerReader| -> std::io::Result<()> {
+        for rec in reader.records() {
+            let line = serde_json::to_string(rec).unwrap_or_default();
+            writeln!(out, "{line}")?;
+        }
+        out.flush()
+    };
+    let mut reader = match LedgerReader::open(&path, "agentpcap.export") {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("agentpcap report: {e}");
+            eprintln!("agentpcap export: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = stdout.lock();
+    if dump(&mut out, &mut reader).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let before = reader.len();
+    drop(reader);
+    if !follow {
+        return ExitCode::SUCCESS;
+    }
+    // the follow: poll the file's growth, stream the new records in
+    // order, stay until the consumer closes the stream
+    let mut streamed = before;
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let Ok(mut reader) = LedgerReader::open(&path, "agentpcap.export") else {
+            return ExitCode::FAILURE;
+        };
+        let len = reader.len();
+        if len == streamed {
+            drop(reader);
+            continue;
+        }
+        let records = reader.records();
+        for rec in records.iter().skip(streamed) {
+            let line = serde_json::to_string(rec).unwrap_or_default();
+            if writeln!(out, "{line}").is_err() {
+                // the consumer closed the stream: a clean end
+                return ExitCode::SUCCESS;
+            }
+        }
+        let _ = out.flush();
+        streamed = len;
+        drop(reader);
+    }
+}
+
+fn diff(before: PathBuf, after: PathBuf) -> ExitCode {
+    let events = match diff::drift(&before, &after) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("agentpcap diff: {e}");
             return ExitCode::FAILURE;
         }
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    for rec in reader.records() {
-        let line = serde_json::to_string(rec).unwrap_or_default();
-        if writeln!(out, "{line}").is_err() {
+    for e in &events {
+        if serde_json::to_writer(&mut out, e).is_err() || writeln!(out).is_err() {
             return ExitCode::FAILURE;
         }
     }
-    if out.flush().is_err() {
-        return ExitCode::FAILURE;
-    }
-    eprintln!("agentpcap report: {} record(s)", reader.len());
+    let _ = out.flush();
     ExitCode::SUCCESS
 }
 
