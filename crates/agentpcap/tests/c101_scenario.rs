@@ -31,6 +31,7 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .stderr(Stdio::null())
         .spawn()
         .expect("agentpcap binary");
+    eprintln!("c101 own pid = {}", std::process::id());
     std::thread::sleep(Duration::from_millis(1200));
 
     // the MCP server: a child of this test process, frames on its
