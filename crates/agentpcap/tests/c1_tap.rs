@@ -93,11 +93,11 @@ fn c100_tap_ledgers_the_classified_flow() {
         .iter()
         .map(|v| {
             format!(
-                "verdict={} event={} method={:?} pid={}",
+                "verdict={} event={} pid={} peer={}",
                 v["verdict"].as_str().unwrap_or("?"),
                 v["event"].as_str().unwrap_or("?"),
-                v["method"],
-                v["pid"]
+                v["pid"],
+                v["peer"]
             )
         })
         .collect();
