@@ -44,13 +44,14 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     // stays 0 — the lineage resolution happens userspace-side
     let mut child = Command::new("sh")
         .arg("-c")
-        .arg(format!("echo agentpcap-p003-marker >> '{scratch_c}'"))
+        .arg(format!(
+            "echo agentpcap-p003-marker >> '{scratch_c}'; sleep 5"
+        ))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("child spawn");
     let child_pid = child.id();
-    let _wait = child.wait().expect("child exits");
     assert!(
         scratch.is_file()
             && std::fs::read_to_string(&scratch)
@@ -102,6 +103,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     );
 
     // lineage: the /proc scan resolves the machine pid's parent, cached
+    // (the child still lives: the sleep keeps its /proc entry present)
     let mut cache = ParentCache::new();
     let ttl = Duration::from_secs(2);
     let ppid = resolve_parent(translated as u32, &mut cache, ttl);
@@ -110,5 +112,6 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     let again = resolve_parent(translated as u32, &mut cache, ttl);
     assert_eq!(again, me, "the cached resolution holds");
     assert_eq!(cache.len(), 1, "one cached lineage entry");
+    let _ = child.wait().expect("child exits after its sleep");
 }
 
