@@ -1,0 +1,33 @@
+name: pr-title-gate
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  title:
+    name: PR title — Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title form
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # Conventional Commits: type: subject (scope optional;
+          # site as a type on site-surface PRs, per CONTRIBUTING.md).
+          # Bot surfaces (renovate dependency PRs as scoped chores,
+          # pre-commit.ci autoupdate) keep their canonical titles.
+          pat='^(feat|fix|docs|refactor|test|build|ci|chore|perf|revert|site)(\([a-z0-9/-]+\))?: .+$'
+          bot='^\[pre-commit\.ci\] pre-commit autoupdate$'
+          if [[ ! "$TITLE" =~ $pat && ! "$TITLE" =~ $bot ]]; then
+            echo "::error::PR title must match ConventionalCommits:"
+            echo "  type: subject (site as a type; scope optional)"
+            echo "  (bot/dependency PRs exempt)"
+            echo "Got: $TITLE"
+            exit 1
+          fi
+          echo "Title OK: $TITLE"
