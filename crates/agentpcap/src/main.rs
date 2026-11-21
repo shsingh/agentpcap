@@ -247,6 +247,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             .strip_prefix("pipe:[")
                             .and_then(|r| r.strip_suffix(']'))
                         else {
+                            eprintln!(
+                                "agentpcap tap: skipped: pid={machine_pid} fd={} link not a pipe ({link})",
+                                s.fd
+                            );
                             continue;
                         };
                         let peer = format!("pipe:{inode}");
