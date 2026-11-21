@@ -6,7 +6,7 @@
 SERVER_FIFO="$1"
 CLIENT_FIFO="$2"
 
-while IFS= read -r line; do
+while IFS= read -t 15 -r line; do
   case "$line" in
     *'"method":"initialize"'*|*'"method":"initialize",'*|*'"method": "initialize"'*)
       printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"alpha1-server","version":"0"}}}\n' > "$CLIENT_FIFO"

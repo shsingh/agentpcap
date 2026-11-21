@@ -51,7 +51,6 @@ fn c101_the_stdio_scenario_answers_the_report() {
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
-    let _server_wait = server.wait().expect("server exits when the fifo closes");
 
     // the client: another child of this test process
     let mut client = Command::new("sh")
@@ -64,6 +63,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
         .spawn()
         .expect("client spawn");
     let _client_wait = client.wait().expect("client exits");
+    let _server_wait = server.wait().expect("server exits when the fifo closes");
 
     let st: std::process::ExitStatus = tap.wait().expect("tap exits");
     assert!(st.success(), "the tap must exit cleanly");
