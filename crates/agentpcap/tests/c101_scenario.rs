@@ -125,4 +125,22 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
             "the reply with id {id} carries its result"
         );
     }
+
+    // the operator answers: `report` prints the records over the
+    // scenario ledger and logs the read (the alpha1 evidence output)
+    let out = bin()
+        .args(["report", "--ledger"])
+        .arg(&ledger)
+        .output()
+        .expect("agentpcap binary");
+    assert!(out.status.success(), "report exits cleanly");
+    let answer = String::from_utf8_lossy(&out.stdout);
+    let answered: Vec<serde_json::Value> = answer
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+    eprintln!("c101 report receipt: lines={}", answered.len());
+    assert_eq!(answered.len(), 6, "the report answers with all six records");
+    assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
+    assert!(answer.contains("hello-from-read"), "the report lists the tool result");
 }
