@@ -363,7 +363,19 @@ fn event_name_for(method: Option<&str>) -> &'static str {
 fn random_token() -> Result<String, std::io::Error> {
     use std::io::Read;
     let mut b = [0u8; 8];
-    let mut f = std::fs::File::open("/dev/urandom")?;
-    f.read_exact(&mut b)?;
-    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+    // three bounded attempts: an /dev/urandom hiccup is transient, an
+    // unexplained failure stays fatal (fail-closed)
+    let mut last = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)) {
+            Ok(()) => {
+                return Ok(b.iter().map(|x| format!("{x:02x}")).collect());
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap())
 }
