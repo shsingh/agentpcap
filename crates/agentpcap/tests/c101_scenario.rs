@@ -8,7 +8,6 @@
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
 use std::io::{BufRead, Write};
-use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -44,12 +43,6 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
-    // the reply pipe's channel key: resolve the inode of this test's
-    // read end while the fd is still owned here
-    let reply_fd = server.stdout.as_ref().unwrap().as_raw_fd();
-    let reply_peer_text = std::fs::read_link(format!("/proc/{}/fd/{}", std::process::id(), reply_fd))
-        .map(|l| l.to_string_lossy().to_string())
-        .unwrap_or_default();
     let mut server_out = server.stdout.take().unwrap();
     let mut server_in = server.stdin.take().unwrap();
     // drain the reply pipe concurrently: the responses = the server's
@@ -109,16 +102,19 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
-    // the reply records: selected by the reply pipe's channel key — the
-    // test holds the read end of the same pipe, so the ledger's peer
-    // names the inode both ends share; ambient jsonrpc from unrelated
-    // processes cannot enter the set
-    let reply_peer = reply_peer_text.replace("pipe:[", "pipe:")
-        .trim_end_matches(']')
-        .to_string();
+    // the reply records: the reply writer can die inside the tap's pop
+    // window (dash forks for redirected builtins), so its /proc entry and
+    // the pipe inode are gone; those records key `peer=unresolved` and
+    // carry `fd-unresolved-at-pop` evidence. Select the replies by the
+    // writer's process shape plus their jsonrpc result payloads.
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| r["peer"].as_str() == Some(reply_peer.as_str()))
+        .filter(|r| {
+            r["pid"].as_u64() != Some(own)
+                && r["process"].as_str() == Some("sh")
+                && r["payload"].is_object()
+                && r["payload"]["result"].is_object()
+        })
         .collect();
     eprintln!(
         "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
