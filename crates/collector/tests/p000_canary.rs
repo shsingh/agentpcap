@@ -36,24 +36,26 @@ fn p000_canary_loads_and_emits_in_vm() {
         .is_some_and(|s| s.trim() == "1");
     std::fs::write(tracing_on, "1").expect("cannot enable tracing (run as root)");
 
-    let marker = "canary-agentpcap-p000";
-    // The snapshot file takes concurrent readers and never blocks;
-    // trace_pipe allows one exclusive reader only.
-    let mut trace = std::fs::File::open("/sys/kernel/tracing/trace")
-        .expect("trace file is not readable; tracing is unavailable");
+    // The probe counts invocations into the `events` map. The canary
+    // reads the counter back in-process; tracefs content is not
+    // required anywhere in this loop.
+    let mut events: aya::maps::HashMap<_, u32, u64> = bpf
+        .take_map("events")
+        .expect("events map missing")
+        .try_into()
+        .expect("events map is not a hash map");
+    let counter_key = 0u32;
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut seen = false;
-    while Instant::now() < deadline && !seen {
-        let mut chunk = vec![0u8; 131_072];
-        let n = trace.read(&mut chunk).unwrap_or(0);
-        if n > 0 {
-            let text = String::from_utf8_lossy(&chunk[..n]);
-            if text.contains(marker) {
-                seen = true;
+    let mut seen = 0u64;
+    while Instant::now() < deadline {
+        if let Some(v) = events.get(&counter_key, aya::maps::MapFlags::ANY) {
+            seen = *v;
+            if seen > 0 {
+                break;
             }
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
     drop(bpf);
-    let _ = std::fs::write(tracing_on, if was_on { "1" } else { "0" });
-    assert!(seen, "no canary marker on the trace snapshot within 3 s");
+    assert!(seen > 0, "no probe invocations counted within 3 s");
 }
