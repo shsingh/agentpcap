@@ -91,10 +91,11 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .filter(|r| r["pid"].as_u64() == Some(srv))
         .collect();
     eprintln!(
-        "c101 ledger receipt: records={} client-records={} server-records={} methods={:?}",
+        "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
         recs.len(),
         client.len(),
         server.len(),
+        recs.iter().map(|r| r["pid"].as_u64()).collect::<Vec<_>>(),
         client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
     );
     for (meth, id) in [
