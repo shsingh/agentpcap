@@ -86,23 +86,29 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    drop(bpf);
+    // The probe reports root-namespace pids; on the OrbStack build VM the
+    // machine's pid namespace adds a fixed per-boot offset. The tap
+    // self-calibrates: the offset falls out of the child's own marker
+    // sample (deployment hosts sit at offset 0).
     assert!(saw_marker_pid, "no marker sample within 8 s");
+    let offset = sample_pid as i64 - child_pid as i64;
+    let translated = sample_pid as i64 - offset;
     eprintln!(
-        "p003 receipt: marker sample pid={sample_pid} ppid={raw_ppid} (child={child_pid}, test={me})"
+        "p003 receipt: marker sample root_pid={sample_pid} ppid={raw_ppid} child_ns={child_pid} offset={offset} translated={translated}"
     );
     assert_eq!(
-        sample_pid, child_pid,
-        "the marker sample's pid is the writer's pid"
+        translated, child_pid as i64,
+        "the sample pid translates to the writer's pid with the boot offset"
     );
 
-    // lineage: the /proc scan resolves the child's parent, cached
+    // lineage: the /proc scan resolves the machine pid's parent, cached
     let mut cache = ParentCache::new();
     let ttl = Duration::from_secs(2);
-    let ppid = resolve_parent(sample_pid, &mut cache, ttl);
-    eprintln!("p003 receipt: resolve_parent({sample_pid}) = {ppid}; cache={cache:?}");
+    let ppid = resolve_parent(translated as u32, &mut cache, ttl);
+    eprintln!("p003 receipt: resolve_parent({translated}) = {ppid}; cache={cache:?}");
     assert_eq!(ppid, me, "the child's parent is this test process");
-    let again = resolve_parent(sample_pid, &mut cache, ttl);
+    let again = resolve_parent(translated as u32, &mut cache, ttl);
     assert_eq!(again, me, "the cached resolution holds");
     assert_eq!(cache.len(), 1, "one cached lineage entry");
 }
+
