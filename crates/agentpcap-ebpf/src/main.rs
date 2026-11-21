@@ -10,9 +10,9 @@
 use aya_ebpf::helpers::{
     bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_probe_read_user_buf,
 };
-use aya_ebpf::macros::{map, tracepoint};
+use aya_ebpf::macros::{map, tracepoint, uprobe};
 use aya_ebpf::maps::{Array, HashMap, Queue};
-use aya_ebpf::programs::TracePointContext;
+use aya_ebpf::programs::{ProbeContext, TracePointContext};
 
 /// Wire format: must match the collector crate's `PipeSample` exactly
 /// (const-locked on both sides at 48 bytes).
@@ -337,6 +337,86 @@ pub fn agentpcap_recv(mut ctx: TracePointContext) -> i64 {
                 *slot += 1;
             }
         } else if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+            *slot += 1;
+        }
+    }
+    0
+}
+
+// The TLS-boundary tap (spec section 8/Modes, ADR-0006): uprobes on the
+// host TLS library's SSL_write and SSL_read capture the plaintext
+// before encryption. The plaintext bytes ride the same 272-byte wire
+// as one fd-less sample (the fd = 0 face): the peer resolves through
+// the writer's /proc fd scan, never the ssl struct. The class rides
+// the `tls_events` map.
+#[map(name = "tls_events")]
+static mut TLS_EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
+
+#[map(name = "tls_canary")]
+static mut TLS_CANARY: Array<u64> = Array::with_max_entries(5, 0);
+
+const SLOT_CGID: u32 = 4;
+
+#[uprobe]
+pub fn agentpcap_tls_write(mut ctx: ProbeContext) -> i64 {
+    // SSL_write_ex(ssl, buf, num, *written): the same x1/x2 face as
+    // the legacy writer (the host ssl module rides the EX face)
+    tls_capture(ctx, 1, 2)
+}
+
+#[uprobe]
+pub fn agentpcap_tls_read(ctx: ProbeContext) -> i64 {
+    tls_capture(ctx, 1, 2)
+}
+
+/// The shared TLS capture: `SSL_write(ssl, buf, num)` and
+/// `SSL_read(ssl, buf, num)` both carry the plaintext pointer at arm64
+/// x1 and its length at x2.
+fn tls_capture(mut ctx: ProbeContext, buf_arg: usize, len_arg: usize) -> i64 {
+    unsafe {
+        // the invoke counter lives before the cgroup gate, and the
+        // cgroup id rides its own slot (it never overwrites the count)
+        if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_INVOKE) {
+            *slot += 1;
+        }
+        let id = bpf_get_current_cgroup_id();
+        let _ = TLS_CANARY.set(SLOT_CGID, &id, 0);
+        if !cgroup_allowed() {
+            return 0;
+        }
+        let buf: usize = match ctx.arg(buf_arg) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let count: usize = match ctx.arg(len_arg) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let take = count.min(PAYLOAD_BYTES_CAP as usize);
+        if take == 0 {
+            return 0;
+        }
+        if !candidate(buf as *const u8) {
+            return 0;
+        }
+        let mut sample = PipeSample {
+            pid: (bpf_get_current_pid_tgid() >> 32) as u32,
+            ppid: 0,
+            len: take as u32,
+            fd: 0,
+            first_bytes: [0u8; 256],
+        };
+        if bpf_probe_read_user_buf(buf as *const u8, &mut sample.first_bytes[..take]).is_err() {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_READ_FAIL) {
+                *slot += 1;
+            }
+            return 0;
+        }
+        if TLS_EVENTS.push(&sample, 0).is_ok() {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                *slot += 1;
+            }
+        } else if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
             *slot += 1;
         }
     }

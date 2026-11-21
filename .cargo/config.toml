@@ -1,2 +1,8 @@
 [target.bpfel-unknown-none]
 linker = "bpf-linker"
+
+# The probe cells ride one kernel and one process: their tests run
+# serially so the aya loads, the attaches and the /proc scans never
+# interleave inside a test binary.
+[env]
+RUST_TEST_THREADS = "1"

@@ -22,7 +22,7 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>] [--cgroup <id>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>] [--cgroup <id>] [--mode opaque]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,6 +40,16 @@ fn main() -> ExitCode {
                 .position(|a| a == "--cgroup")
                 .and_then(|i| args.get(i + 1))
                 .and_then(|v| v.parse::<u64>().ok()),
+            // the mode face: attributed is the default (spec section 8);
+            // `--mode opaque` strips the payload content at the feed face
+            args.iter()
+                .position(|a| a == "--mode")
+                .and_then(|i| args.get(i + 1))
+                .map(|v| match v.as_str() {
+                    "opaque" => Mode::Opaque,
+                    _ => Mode::Attributed,
+                })
+                .unwrap_or(Mode::Attributed),
         ),
         _ => {
             eprintln!("{USAGE}");
@@ -112,7 +122,7 @@ fn report(path: PathBuf) -> ExitCode {
 /// The tap: load the probe, drain the queue, classify, reassemble,
 /// ledger. The classified frames feed the reassembler; the reassembled
 /// session events land in the ledger one per session event.
-fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCode {
+fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode) -> ExitCode {
     let mut bpf = match aya::Bpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
@@ -204,6 +214,49 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
         drop(allow);
     }
 
+    // The TLS-boundary collector (ADR-0006): the uprobes ride the host
+    // libssl's SSL_write_ex/SSL_read_ex (the face the host ssl module
+    // calls directly), sharing the calibration and the cgroup map.
+    let prog_tls_w: &mut aya::programs::UProbe =
+        match bpf.program_mut("agentpcap_tls_write").expect("tls write program").try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("agentpcap tap: agentpcap_tls_write is not an uprobe");
+                return ExitCode::FAILURE;
+            }
+        };
+    let libssl = "/usr/lib/aarch64-linux-gnu/libssl.so.3";
+    if let Err(e) = prog_tls_w
+        .load()
+        .and_then(|_| prog_tls_w.attach(Some("SSL_write_ex"), 0, libssl, None))
+    {
+        eprintln!("agentpcap tap: the tls write load/attach failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    let prog_tls_r: &mut aya::programs::UProbe =
+        match bpf.program_mut("agentpcap_tls_read").expect("tls read program").try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("agentpcap tap: agentpcap_tls_read is not an uprobe");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(e) = prog_tls_r
+        .load()
+        .and_then(|_| prog_tls_r.attach(Some("SSL_read_ex"), 0, libssl, None))
+    {
+        eprintln!("agentpcap tap: the tls read load/attach failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    let mut tls_queue: Queue<_, agentpcap_collector::PipeSample> =
+        match bpf.take_map("tls_events").expect("tls queue map").try_into() {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
     // Calibrate the pid-namespace offset: the tap writes one sentinel
     // through the same path every tapped writer uses; the probe's
     // root-namespace pid for that write minus the tap's own pid is the
@@ -276,21 +329,25 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
     let host = std::fs::read_to_string("/etc/hostname")
         .map(|h| h.trim().to_string())
         .unwrap_or_default();
-    let mut reassembler = Reassembler::new(host.clone(), Mode::Attributed, "tap".into());
+    let mut reassembler = Reassembler::new(host.clone(), mode.clone(), "tap".into());
     let mut seq: u64 = 0;
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
 
     while Instant::now() < deadline {
-        // the drain alternates the two class queues (ADR-0005): the
-        // class of a sample comes from the map, not from the wire
+        // the drain alternates the three class queues (ADR-0005,
+        // ADR-0006): the class of a sample comes from the map, not
+        // from the wire
         let sample_class = match queue.pop(0) {
             Ok(s) => Some(("stdio-pipe", "pipe", s)),
             Err(_) => match sock_queue.pop(0) {
                 Ok(s) => Some((agentpcap_collector::TRANSPORT_TCP, "socket", s)),
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(2));
-                    continue;
-                }
+                Err(_) => match tls_queue.pop(0) {
+                    Ok(s) => Some((agentpcap_collector::TRANSPORT_TCP, "tls", s)),
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                },
             },
         };
         let Some((transport, class, s)) = sample_class else {
@@ -324,11 +381,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
             let peer = if class == "pipe" {
                 let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
                 pipe_fd_channel(&fd_path, machine_pid, s.fd)
-            } else {
+            } else if class == "socket" {
                 match agentpcap_collector::resolve_socket_peer(machine_pid, s.fd) {
                     Some(p) => Some(p),
                     None => None,
                 }
+            } else {
+                // the TLS face (ADR-0006): the fd carries no socket; the
+                // peer scans the writer's connected sockets
+                agentpcap_collector::scan_connected_socket(machine_pid)
             };
             let died_unresolved = peer.is_none();
             let resolved = peer.unwrap_or_else(|| "unresolved".to_string());
@@ -348,7 +409,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
             if class == "pipe" {
                 evidence[0] = "stdio-pipe".into();
             };
-            if class == "socket" {
+            if class == "tls" {
+                evidence[0] = "tls-boundary".into();
+            };
+            if class != "pipe" {
                 // the canonical five-tuple face rides the evidence
                 evidence.push(format!("peer-face:{resolved}"));
             }
@@ -358,15 +422,23 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
             if died_unresolved {
                 evidence.push("fd-unresolved-at-pop".into());
             }
-                // The parsed frame feeds the reassembler; a sample with
-                // no parseable JSON object (a truncation at the sample
-                // cap) records agent-shaped and unresolved, the alpha1
-                // face, never a guess.
-                let candidate = lossy.trim_start_matches(|c| c != '{');
-                let parsed = serde_json::from_str::<Value>(candidate)
-                    .ok()
-                    .filter(|v| v.is_object());
-                match parsed {
+        // The parsed frame feeds the reassembler; a sample with
+        // no parseable JSON object (a truncation at the sample
+        // cap) records agent-shaped and unresolved, the alpha1
+        // face, never a guess. The opaque mode strips the payload
+        // content at this feed face: the record carries the method and
+        // the id face, the args and results never ride.
+        let candidate = lossy.trim_start_matches(|c| c != '{');
+        let mut parsed = serde_json::from_str::<Value>(candidate)
+            .ok()
+            .filter(|v| v.is_object());
+        if mode == Mode::Opaque {
+            if let Some(obj) = parsed.as_mut().and_then(|v| v.as_object_mut()) {
+                obj.remove("params");
+                obj.remove("result");
+            }
+        }
+        match parsed {
                     Some(payload) => {
                         let frame = Frame {
                             transport: transport.to_string(),

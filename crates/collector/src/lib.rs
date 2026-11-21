@@ -135,6 +135,36 @@ fn endpoint(hex: &str) -> Option<String> {
 pub const TRANSPORT_PIPE: &str = "stdio-pipe";
 pub const TRANSPORT_TCP: &str = "tcp";
 
+/// The TLS face (ADR-0006): an fd-less sample's peer resolves through
+/// the writer's /proc fd scan - the first connected socket the writer
+/// holds, never the ssl struct. A writer with several connected
+/// sockets is ambiguous and keys honestly with its evidence; the
+/// ambiguity face rides the caller.
+pub fn scan_connected_socket(pid: u32) -> Option<String> {
+    let dir = format!("/proc/{pid}/fd");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut inode = None;
+    for e in entries.flatten() {
+        if let Ok(link) = std::fs::read_link(e.path()) {
+            let text = link.to_string_lossy().to_string();
+            if !text.starts_with("socket:[") || !text.ends_with(']') {
+                continue;
+            }
+            if let Ok(in_) = text[8..text.len() - 1].parse::<u64>() {
+                if let Some(face) = five_tuple_by_inode(in_) {
+                    // a listener's remote rides 0.0.0.0:0; the connected
+                    // socket carries a real remote face
+                    if !face.contains(":0.0.0.0:0=") {
+                        inode = Some(face);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    inode
+}
+
 /// Resolve the parent pid of `pid` through `/proc/<pid>/status` (the
 /// `PPid` line) and cache the answer for `ttl`. A process that has
 /// exited resolves to `0`; the cache entry drops. The cache answers
