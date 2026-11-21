@@ -1,9 +1,10 @@
-# TDD Ledger — alpha1
+# TDD Ledger
 
 Every behavioural change lands as a RED cell first. RED means the test
 fails on the missing behaviour, not on the test itself. Receipts name
 the commit and the gate that ran in the `agentpcap-build-dev` VM
-(ubuntu noble arm64, kernel 7.2.12).
+(ubuntu noble arm64, kernel 7.2.12). The alpha1 cells keep their
+receipts; the alpha2 cells ride below.
 
 ## Ledger crate — `agentpcap-ledger`
 
@@ -68,11 +69,39 @@ it belongs to its base case.
 | C001 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `record --ledger P` appends JSON Lines from stdin; exit 0; two chained records verified | GREEN on `feat/2026.01-alpha1` |
 | C002 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report --ledger P` prints the records; the read lands in the access log as `actor = agentpcap.report` | GREEN on `feat/2026.01-alpha1` |
 | C003 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report` on a torn ledger: nonzero exit, no records on stdout, the failure states itself on stderr | GREEN on `feat/2026.01-alpha1` |
-| C101 | [§13 Evaluation hooks](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#13-evaluation-hooks) | the alpha1 scenario (ADR-0002): the test plays an MCP client, the frames ride the server's stdin pipe, the server answers on a piped stdout, the tap runs throughout — the client records carry all three requests classified `mcp` (payload ids 1/2/3), the reply records carry the three results, and `report` prints all six | GREEN on `fix/greptile-audit`; receipt: records=6 client-records=3 server-records=3 methods=[initialize, tools/list, tools/call], report lines=6, three consecutive green runs |
-| C100 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the tap: probe loop, pid-space calibration, pipe-fd identity, classifier and ledger in one run — a real MCP frame lands `verdict=mcp`, a methodless result lands `agent-unidentified`, both on one channel-keyed pipe | GREEN on `fix/greptile-audit`; receipt: `test result: ok. 1 passed`, ledger receipt (3): the mcp frame and the methodless result recorded |
+| C101 | [§13 Evaluation hooks](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#13-evaluation-hooks) | the stdio scenario (ADR-0002): the test plays an MCP client, the frames ride the server's stdin pipe, the server answers on a piped stdout, the tap runs throughout — the initialize, tools/list and tools/call pairs merge into three session events: `init` with the 16-hex capability fingerprint and the `2025-06-18` protocolVersion evidence, `tools-list` with the discovered tool name on the evidence, `tools-call` with `tool_name=read` and the result text, all in one session | GREEN on `feat/reassembler` `1115302`; receipt: records=3 events=[init, tools-list, tools-call] one session, report lines=3 own=47047. The alpha1 shape (six frame records) preceded the reassembler; its receipts live on `fix/greptile-audit` and in the alpha1 gate report |
+| C100 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the tap: probe loop, pid-space calibration, pipe-fd identity, classifier, reassembler and ledger in one run — a real MCP frame lands `verdict=mcp`, a methodless result lands `agent-unidentified` as the orphan, both on one pipe. The ids ride this cell's own space (500/501): an id another cell parks in the parallel suite makes the bind ambiguous | GREEN on `feat/reassembler` `1115302`; receipt: `test result: ok. 1 passed` (3.08s), the mcp frame's parked request flushes `mcp` and the methodless result orphans `agent-unidentified` |
 
 ## Green gate rule
 
 A cell moves to green only on a fresh run in the build VM. The run
 receipt (`test result: ok. N passed`) is evidence, not the commit
 message. A green without a named run receipt does not count.
+
+## Reassembler crate — `agentpcap-reassemble` (issues #17, #18)
+
+The session-event state machine. Cell prefix `R` in this section. The
+tap feeds one frame per classified sample; the reassembler emits one
+event record per session event (`docs/spec.md#4-event-record-schema`).
+Pairing: the pipe class keys a session by the pipe pair — the client
+pid that writes requests and the child server whose responses resolve
+`ppid`; a response whose writer dies inside the pop window binds by the
+exact id when it names one pending request across every bucket, and
+orphan-honestly (`orphan-response`) otherwise. The in-probe fd
+resolution that removes the dying-writer class at the root is parked in
+issue #76 with its kernel receipts (the BTF walk).
+
+| Cell | Spec anchor | Assertion | Red receipts | Green receipt |
+|------|-------------|-----------|--------------|---------------|
+| R101 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | the initialize pair merges into one `init` record: the capability fingerprint recomputes 16-hex from the result's capabilities by the ledger hash rule, `protocolVersion` rides evidence, the merged payload carries both halves, the pair is `pipe-pair:C:S`, `dedup` = transport:pair:event:id | compile red `642d531` E0599/E0382; fingerprint red `d5dfc21`: left None, right `ba8e230d1afc3aa1` (the merge read the envelope, not the result member) | GREEN `1115302`, 1 passed |
+| R102 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | the tools/list pair merges with the discovered tool names and the count on the evidence (16 tools cap); no single `tool_name` | compile red `642d531` | GREEN `1115302`, 1 passed |
+| R103 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | the tools/call pair merges with `tool_name` from `params.name` and the result text in the payload | compile red `642d531` | GREEN `1115302`, 1 passed |
+| R104 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | a server-initiated notification emits on arrival keyed by the pipe pair; two notifications keep distinct dedupe keys (the per-session notify sequence) | compile red `642d531` | GREEN `1115302`, 1 passed |
+| R105 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | unidentified flow as a first-class record: an orphan response, the unframed shape, and the burst cadence (`cadence:burst-N-in-1s` on repeated frames inside one second on one session); the absence of `MCP-Protocol-Version` alone never decides the verdict | compile red `642d531` | GREEN `1115302`, 1 passed |
+| R106 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | `message/send` classifies verdict `a2a` with the `a2a-handoff` event from protocol semantics, never a catalog | compile red `642d531` | GREEN `1115302`, 1 passed |
+| R107 | [§6 Classification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#6-classification) | the pairing rule: the pairing parent answers which server and the payload id answers which request; two servers of one client bind their own pairs, never across ids; a request no response binds still lands at flush on its own channel with the `no-response` evidence and no fingerprint | compile red `642d531` | GREEN `1115302`, 1 passed |
+
+The full workspace suite at `1115302` ran green in one VM round
+(32 test binaries, rc=0): the reassembler cells, the collector cells
+P000-P003 (8 passed), the ledger cells L001-L005 and the L10x
+fixtures, and the CLI cells C001-C003, C100, C101.

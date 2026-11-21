@@ -95,56 +95,73 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
     let own = std::process::id() as u64;
-    let client: Vec<&serde_json::Value> = recs
+    // the reassembled session shape: the initialize, tools/list, and
+    // tools/call pairs merge into three session events; the replies
+    // bind their requests and leave no orphans (the tap window outlasts
+    // the scenario). The suite runs tests in parallel: every tap hears
+    // the other tests' pipes, so the records filter to this
+    // scenario's own client pid.
+    eprintln!(
+        "c101 ledger receipt: records={} events={:?} peers={:?}",
+        recs.len(),
+        recs.iter().map(|r| r["event"].as_str()).collect::<Vec<_>>(),
+        recs.iter().map(|r| format!("{}", r["peer"])).collect::<Vec<_>>()
+    );
+    let mine: Vec<&serde_json::Value> = recs
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
-    // the reply records: the reply writer can die inside the tap's pop
-    // window (dash forks even for bare builtins in a loop), so its
-    // records key `peer=unresolved`. The tie to this scenario is the
-    // payload set: the exact ids, the scenario's server name, the exact
-    // tool list and the exact result text. An ambient exchange carries
-    // different payloads and cannot pass the asserts.
-    let server: Vec<&serde_json::Value> = recs
-        .iter()
-        .filter(|r| r["payload"]["result"].is_object())
-        .collect();
-    eprintln!(
-        "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
-        recs.len(),
-        client.len(),
-        server.len(),
-        recs.iter().map(|r| format!("{}/{}", r["pid"], r["peer"])).collect::<Vec<_>>(),
-        client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
+    assert_eq!(mine.len(), 3, "three session events land in the ledger");
+    for ev in &mine {
+        assert_eq!(ev["verdict"], "mcp");
+    }
+    assert_eq!(mine[0]["event"], "init");
+    let init = mine[0];
+    let fp = init["cap_fingerprint"].as_str().unwrap_or("");
+    assert_eq!(fp.len(), 16, "the fingerprint carries 16 hex digits");
+    assert!(
+        fp.chars().all(|c| c.is_ascii_hexdigit()),
+        "the fingerprint is hex"
     );
-    for (meth, id) in [
-        ("initialize", 1),
-        ("tools/list", 2),
-        ("tools/call", 3),
-    ] {
-        assert!(
-            client.iter().any(|r| {
-                r["verdict"] == "mcp"
-                    && r["method"] == meth
-                    && r["payload"]["id"] == id
-            }),
-            "the client's {meth} request with id {id} classified mcp"
-        );
-    }
-    assert_eq!(server.len(), 3, "the server's three replies recorded");
-    for (id, frag) in [
-        (1, "alpha1-server"),
-        (2, "\"tools\""),
-        (3, "hello-from-read"),
-    ] {
-        assert!(
-            server
-                .iter()
-                .any(|r| r["payload"]["id"] == id
-                    && r.to_string().contains(frag)),
-            "the reply with id {id} carries its result"
-        );
-    }
+    assert_eq!(
+        init["protocol_version"].as_str(),
+        Some("2025-06-18"),
+        "the initialize result's protocolVersion rides as evidence"
+    );
+    assert_eq!(
+        init["payload"]["result"]["serverInfo"]["name"],
+        "alpha1-server",
+        "the merged init record carries the server's name"
+    );
+    assert_eq!(mine[1]["event"], "tools-list");
+    let list = mine[1];
+    assert_eq!(
+        list["payload"]["result"]["tools"][0]["name"],
+        "read",
+        "the merged tools-list record carries the server's tools"
+    );
+    assert!(
+        list["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "tool:read"),
+        "the discovered tool name rides the evidence"
+    );
+    assert_eq!(mine[2]["event"], "tools-call");
+    let call = mine[2];
+    assert_eq!(call["tool_name"].as_str(), Some("read"));
+    assert_eq!(
+        call["payload"]["result"]["content"][0]["text"],
+        "hello-from-read",
+        "the tool result text rides the merged record"
+    );
+    let session = mine[0]["session_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        mine[1]["session_id"].as_str(),
+        Some(session.as_str()),
+        "all three events key one session"
+    );
 
     // the operator answers: `report` prints the records over the
     // scenario ledger and logs the read (the alpha1 evidence output)
@@ -159,8 +176,18 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .lines()
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
-    eprintln!("c101 report receipt: lines={}", answered.len());
-    assert_eq!(answered.len(), 6, "the report answers with all six records");
+    eprintln!(
+        "c101 report receipt: lines={} own={}",
+        answered.len(), own
+    );
+    let own_records = answered
+        .iter()
+        .filter(|v| v["pid"].as_u64() == Some(own))
+        .count();
+    assert_eq!(
+        own_records, 3,
+        "the report answers the three session events"
+    );
     assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
     assert!(answer.contains("hello-from-read"), "the report lists the tool result");
 }

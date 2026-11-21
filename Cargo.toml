@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agentpcap", "crates/collector", "crates/events", "crates/ledger"]
+members = ["crates/agentpcap", "crates/collector", "crates/events", "crates/ledger", "crates/reassemble"]
 
 [workspace.package]
 version = "0.0.1-alpha1"
