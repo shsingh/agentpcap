@@ -66,7 +66,7 @@ Definitions used throughout:
 
 ## 1. Scope
 
-agentpcap covers the flows the four surveyed tooling classes do not: out-of-path coverage (G1), capture without TLS termination (G2), the stdio transport (G3), MCP and A2A session semantics (G4), the append-only operator flow ledger (G5), and triaged unidentified agent flows (G6). This document defines the event record, the ledger format, the collectors, the classification behavior, the CLI, and the two deployment topologies.
+agentpcap covers the flows the four surveyed tooling classes do not: out-of-path coverage (G001), capture without TLS termination (G002), the stdio transport (G003), MCP and A2A session semantics (G004), the append-only operator flow ledger (G005), and triaged unidentified agent flows (G006). This document defines the event record, the ledger format, the collectors, the classification behavior, the CLI, and the two deployment topologies.
 
 ## 2. Non-goals
 

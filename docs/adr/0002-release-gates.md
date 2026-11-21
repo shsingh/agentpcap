@@ -1,0 +1,68 @@
+# 0002 — Release gates and evaluation scenarios
+
+Status: accepted
+
+## Context
+
+The project releases in slices. Each merge must land with evidence, and
+each named release carries one gate the evaluation fleet measures.
+Without a written gate, a release is a date; with one, it is a set of
+scenarios with numbers. The companion research note defines six
+measurements (M1 to M6); this record binds them to release gates.
+
+## Decision
+
+Three gates, each with its scenario set and its measurement:
+
+### AG-0.1 — MVP: the stdio class, end to end
+
+Scenario: one lab host, one MCP client, one local MCP server launched
+over stdio. The pipe collector captures the JSON-RPC frames; the ledger
+appends; `report` answers "who called what with which capabilities".
+
+- Coverage: the pipe class, opaque mode, one event schema, four CLI
+  subcommands' `record` and `report` paths.
+- Measures: ledger chain verifies after rotation (M4 partial); no path
+  writes (the read-only invariant test); zero arguments stored.
+- Evidence: the ledger excerpt, the report output, the conformance
+  fixtures, posted in the release.
+
+### AG-0.2 — the wire class and both modes
+
+Scenario: the same fleet plus remote MCP servers over Streamable HTTP
+with TLS, and one attributed-mode host.
+
+- Coverage: socket collector, TLS-boundary collector, session
+  reassembly, unidentified-flow events, `diff` and `export`, the
+  systemd unit and the DaemonSet manifest.
+- Measures: transport-coverage matrix over stdio, Streamable HTTP,
+  legacy SSE and A2A (M3 run); capability-drift detection before and
+  after a tool-set change (M4 full).
+- Evidence: the coverage matrix, the drift diff, the deployment
+  manifests, in the release.
+
+### AG-1.0 — the evaluation gate
+
+Scenario: the full lab fleet with seeded shadow deployments, measured
+against the published baselines of the survey.
+
+- Coverage: everything above, plus the unidentified-flow pass and the
+  criteria-gate handoff.
+- Measures: all six — M1 shadow-discovery recall against the
+  header-heuristic class and active probing; M2 tap overhead, tap-on
+  versus tap-off delta with the identical harness, against the sub-3%
+  published figure; M3 the coverage matrix at full pass; M4 ledger
+  fidelity on capability drift; M5 unidentified-triage precision; M6
+  gate-handoff latency against the 2-second criteria budget.
+- Gate rule: M1 passing with M3's full matrix, at M2's cost, is the
+  result that decides the project's public claims.
+
+## Consequences
+
+- No release before its gate: a slice may ship behind a pre-release
+  tag without a gate, but no gate carries a version claim until its
+  scenarios pass and their evidence posts.
+- The evaluation harness owns the measurement surfaces; the binary
+  exposes counters (spec, Section 13) and nothing else.
+- The gates map to project milestones AG-0.1, AG-0.2 and AG-1.0; the
+  roadmap page carries the live issue mapping.
