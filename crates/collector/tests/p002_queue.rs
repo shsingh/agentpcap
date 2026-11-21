@@ -56,8 +56,8 @@ fn p002_probe_emits_and_userspace_reads_back() {
         for _ in 0..2048 {
             match queue.pop(0) {
                 Ok(s) => {
-                    let n = s.len as usize;
-                    if n >= marker.len() && &s.first_bytes[..n.min(32)] .starts_with(marker) {
+                    let n = (s.len as usize).min(32);
+                    if n >= marker.len() && s.first_bytes[..n].starts_with(marker) {
                         found = true;
                         break;
                     }
