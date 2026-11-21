@@ -1,6 +1,6 @@
 # agentpcap
 
-[![License: MIT](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/shsingh/agentpcap/blob/main/LICENSE) [![GitHub commit activity](https://img.shields.io/github/commit-activity/m/shsingh/agentpcap)](https://github.com/shsingh/agentpcap/graphs/commit-activity) [![agentpcap site](https://img.shields.io/website?down_message=offline&up_message=live&url=https%3A%2F%2Fagentpcap.kalatopi.sh%2F&label=site)](https://agentpcap.kalatopi.sh/)
+[![License: MIT](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/shsingh/agentpcap/blob/main/LICENSE) [![agentpcap site](https://img.shields.io/website?down_message=offline&up_message=live&url=https%3A%2F%2Fagentpcap.kalatopi.sh%2F&label=site)](https://agentpcap.kalatopi.sh/) [![OpenSSF Scorecard](https://api.securityscorecards.dev/badge?org=shsingh&repo=agentpcap)](https://github.com/ossf/scorecard/blob/main/docs/checks.md) [![GitHub commit activity](https://img.shields.io/github/commit-activity/m/shsingh/agentpcap)](https://github.com/shsingh/agentpcap/graphs/commit-activity) [![agentpcap pre-commit.ci status](https://results.pre-commit.ci/badge/github/shsingh/agentpcap/main.svg)](https://results.pre-commit.ci/latest/github/shsingh/agentpcap/main)
 
 A read-only, protocol-aware tap for agent tool calls. It observes the
 socket and pipe boundaries of the Model Context Protocol (MCP) and
