@@ -28,7 +28,7 @@ repository's posture.
 | [aya](https://github.com/aya-rs/aya) | MIT OR Apache-2.0 | Rust eBPF library; the probe and userspace split | linked crate; not vendored |
 | [AgentSight](https://github.com/eunomia-bpf/agentsight) | MIT | eBPF probe programs; reference and re-vendor candidate | MIT headers preserved on any vendored file |
 | [agentgateway](https://github.com/agentgateway/agentgateway) | Apache-2.0 | MCP / A2A session semantics; reference for the reassembly layer | no code at draft 00; any vendored file carries its Apache-2.0 notice and change statement |
-| [Pixie](https://github.com/pixie-io/pixie) | Apache-2.0 | the uprobe-on-TLS-library technique (C2) | technique credit only; no code |
+| [Pixie](https://github.com/pixie-io/pixie) | Apache-2.0 | the uprobe-on-TLS-library technique (C002) | technique credit only; no code |
 | [Hubble](https://github.com/cilium/hubble) | Apache-2.0 | flow-layer reference; per-node placement precedent | technique credit only; no code |
 | [Model Context Protocol](https://modelcontextprotocol.io/) | specification | the named protocol surface | no code |
 
