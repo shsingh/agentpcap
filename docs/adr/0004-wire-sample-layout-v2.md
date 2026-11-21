@@ -1,7 +1,8 @@
 # 0004 — Wire sample layout v2: the fd field, the pipe-keyed peer, and the filter boundary
 
 Status: accepted (supersedes [0003](0003-wire-sample-layout.md) in part;
-0003's size contract stays in force)
+0003's size contract stays in force). The socket-class decision extends
+this record: see [0005](0005-wire-sample-layout-v3-socket-class.md).
 
 ## Context
 

@@ -22,7 +22,7 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>] [--cgroup <id>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,6 +36,10 @@ fn main() -> ExitCode {
                 .and_then(|i| args.get(i + 1))
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(60),
+            args.iter()
+                .position(|a| a == "--cgroup")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse::<u64>().ok()),
         ),
         _ => {
             eprintln!("{USAGE}");
@@ -108,7 +112,7 @@ fn report(path: PathBuf) -> ExitCode {
 /// The tap: load the probe, drain the queue, classify, reassemble,
 /// ledger. The classified frames feed the reassembler; the reassembled
 /// session events land in the ledger one per session event.
-fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
+fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCode {
     let mut bpf = match aya::Bpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
@@ -139,6 +143,66 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+
+    // The socket class rides the same object (ADR-0005): two more
+    // tracepoints attach beside the pipe one and share the calibration
+    // and the pid offset.
+    let prog_sock: &mut TracePoint =
+        match bpf.program_mut("agentpcap_socket").expect("socket program").try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("agentpcap tap: agentpcap_socket is not a tracepoint");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(e) = prog_sock
+        .load()
+        .and_then(|_| prog_sock.attach("syscalls", "sys_enter_sendto"))
+    {
+        eprintln!("agentpcap tap: the socket probe attach failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    let prog_recv: &mut TracePoint =
+        match bpf.program_mut("agentpcap_recv").expect("recv program").try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("agentpcap tap: agentpcap_recv is not a tracepoint");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(e) = prog_recv
+        .load()
+        .and_then(|_| prog_recv.attach("syscalls", "sys_enter_recvfrom"))
+    {
+        eprintln!("agentpcap tap: the recv probe attach failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    let mut sock_queue: Queue<_, agentpcap_collector::PipeSample> =
+        match bpf.take_map("sock_events").expect("sock queue map").try_into() {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    // The cgroup filter face (ADR-0005): the marker key turns the
+    // probe's allow filter on; the lab default captures all.
+    if let Some(cg) = cgroup {
+        let mut allow: aya::maps::HashMap<_, u64, u32> = match bpf
+            .take_map("cgroup_allow")
+            .expect("cgroup_allow map")
+            .try_into()
+        {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        allow.insert(u64::MAX, 1, 0).ok();
+        allow.insert(cg, 1, 0).ok();
+        drop(allow);
+    }
 
     // Calibrate the pid-namespace offset: the tap writes one sentinel
     // through the same path every tapped writer uses; the probe's
@@ -217,83 +281,83 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
 
     while Instant::now() < deadline {
-        match queue.pop(0) {
-            Ok(s) => {
-                seq += 1;
-                let machine_pid = s.pid as i64 - offset;
-                if machine_pid <= 0 {
+        // the drain alternates the two class queues (ADR-0005): the
+        // class of a sample comes from the map, not from the wire
+        let sample_class = match queue.pop(0) {
+            Ok(s) => Some(("stdio-pipe", "pipe", s)),
+            Err(_) => match sock_queue.pop(0) {
+                Ok(s) => Some((agentpcap_collector::TRANSPORT_TCP, "socket", s)),
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(2));
                     continue;
                 }
-                let machine_pid = machine_pid as u32;
-                let payload_bytes =
-                    &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
-                match classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) {
-                    Decision::Other => continue,
-                    _ => (),
-                }
-                // Pipe identity: the write's fd must name a pipe; the
-                // pipe inode is the channel's pair key, so both ends of
-                // one channel share the peer and unrelated channels
-                // never collide. Three outcomes: a resolvable fd that
-                // names pipe[:] records the channel; a resolvable fd
-                // that names anything else is live process traffic to a
-                // file or socket and never records; a failed lookup
-                // means the writer's /proc entry is gone (it died
-                // inside the pop window) and the record lands keyed
-                // honestly as unresolved, with the fd-unresolved-at-pop
-                // evidence.
+            },
+        };
+        let Some((transport, class, s)) = sample_class else {
+            continue;
+        };
+        {
+            seq += 1;
+            let machine_pid = s.pid as i64 - offset;
+            if machine_pid <= 0 {
+                continue;
+            }
+            let machine_pid = machine_pid as u32;
+            let payload_bytes =
+                &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
+            match classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) {
+                Decision::Other => continue,
+                _ => (),
+            }
+            // The channel face, per class. The pipe class: the write's
+            // fd must name a pipe; the pipe inode is the channel's pair
+            // key, so both ends of one channel share the peer and
+            // unrelated channels never collide. Three outcomes: a
+            // resolvable fd that names pipe[:] records the channel; a
+            // resolvable fd that names anything else is live process
+            // traffic to a file or socket and never records; a failed
+            // lookup means the writer's /proc entry is gone (it died
+            // inside the pop window) and the record lands keyed
+            // honestly as unresolved, with the fd-unresolved-at-pop
+            // evidence. The socket class: the fd names socket[:<inode>]
+            // and the five-tuple resolves through /proc/net (ADR-0005).
+            let peer = if class == "pipe" {
                 let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
-                let peer = (0..5)
-                    .find_map(|attempt| {
-                        if attempt > 0 {
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
-                        match std::fs::read_link(&fd_path) {
-                            // the entry is gone: retry
-                            Err(_) => None,
-                            Ok(p) => Some(p),
-                        }
-                    })
-                    .map(|l| {
-                        // the fd resolved at least once: final answer
-                        let text = l.to_string_lossy().to_string();
-                        match text
-                            .strip_suffix(']')
-                            .and_then(|rest| rest.strip_prefix("pipe:["))
-                        {
-                            Some(inode) => format!("pipe:{inode}"),
-                            // a live non-pipe fd: not stdio traffic
-                            _ => {
-                                eprintln!(
-                                    "agentpcap tap: skip: pid={machine_pid} fd={} link={text}",
-                                    s.fd
-                                );
-                                String::from("skipped")
-                            }
-                        }
-                    })
-                    .and_then(|p| {
-                        if p == "skipped" {
-                            None
-                        } else {
-                            Some(p)
-                        }
-                    });
-                let died_unresolved = peer.is_none();
-                let resolved = peer.unwrap_or_else(|| "unresolved".to_string());
-                let ppid = resolve_parent(machine_pid, &mut cache, Duration::from_secs(2));
-                let process =
-                    std::fs::read_to_string(format!("/proc/{machine_pid}/comm"))
-                        .map(|c| c.trim().to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
-                let lossy = String::from_utf8_lossy(payload_bytes).to_string();
-                let mut evidence = vec!["stdio-pipe".to_string()];
-                if ppid != 0 {
-                    evidence.push(format!("lineage:parent-{ppid}"));
+                pipe_fd_channel(&fd_path, machine_pid, s.fd)
+            } else {
+                match agentpcap_collector::resolve_socket_peer(machine_pid, s.fd) {
+                    Some(p) => Some(p),
+                    None => None,
                 }
-                if died_unresolved {
-                    evidence.push("fd-unresolved-at-pop".into());
-                }
+            };
+            let died_unresolved = peer.is_none();
+            let resolved = peer.unwrap_or_else(|| "unresolved".to_string());
+            let ppid = if class == "pipe" {
+                resolve_parent(machine_pid, &mut cache, Duration::from_secs(2))
+            } else {
+                // the socket samples carry no lineage: the session keys
+                // by the canonical five-tuple either way (ADR-0005)
+                0
+            };
+            let process =
+                std::fs::read_to_string(format!("/proc/{machine_pid}/comm"))
+                    .map(|c| c.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+            let lossy = String::from_utf8_lossy(payload_bytes).to_string();
+            let mut evidence = vec![class.to_string()];
+            if class == "pipe" {
+                evidence[0] = "stdio-pipe".into();
+            };
+            if class == "socket" {
+                // the canonical five-tuple face rides the evidence
+                evidence.push(format!("peer-face:{resolved}"));
+            }
+            if ppid != 0 {
+                evidence.push(format!("lineage:parent-{ppid}"));
+            }
+            if died_unresolved {
+                evidence.push("fd-unresolved-at-pop".into());
+            }
                 // The parsed frame feeds the reassembler; a sample with
                 // no parseable JSON object (a truncation at the sample
                 // cap) records agent-shaped and unresolved, the alpha1
@@ -305,7 +369,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                 match parsed {
                     Some(payload) => {
                         let frame = Frame {
-                            transport: "stdio-pipe".into(),
+                            transport: transport.to_string(),
                             peer: resolved,
                             pid: machine_pid,
                             ppid,
@@ -328,7 +392,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             host: host.clone(),
                             process,
                             pid: machine_pid,
-                            transport: "stdio-pipe".into(),
+                            transport: transport.to_string(),
                             mode: Mode::Attributed,
                             verdict: Verdict::AgentUnidentified,
                             event: "unidentified".into(),
@@ -348,12 +412,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             eprintln!("agentpcap tap: {e}");
                             return ExitCode::FAILURE;
                         }
-                    }
+                     }
                 }
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(2)),
         }
-    }
     // the window ends: every still-pending request lands with the
     // no-response evidence — capture loss degrades the ledger, it never
     // silently drops it
@@ -365,6 +427,35 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
     ExitCode::SUCCESS
+}
+
+/// The pipe channel face (ADR-0004): a resolvable fd naming
+/// `pipe:[<inode>]` names the channel; a resolvable fd naming anything
+/// else is live non-pipe traffic and never records; a failed lookup
+/// (the writer died inside the pop window) keys the record honestly
+/// unresolved with its evidence.
+fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
+    (0..5)
+        .find_map(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            std::fs::read_link(fd_path).ok()
+        })
+        .map(|l| {
+            let text = l.to_string_lossy().to_string();
+            match text
+                .strip_suffix(']')
+                .and_then(|rest| rest.strip_prefix("pipe:["))
+            {
+                Some(inode) => format!("pipe:{inode}"),
+                _ => {
+                    eprintln!("agentpcap tap: skip: pid={machine_pid} fd={fd} link={text}");
+                    String::from("skipped")
+                }
+            }
+        })
+        .and_then(|p| if p == "skipped" { None } else { Some(p) })
 }
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).

@@ -66,6 +66,75 @@ impl ParentCacheEntry {
 
 use std::time::Duration;
 
+/// Resolve a socket fd's canonical five-tuple face (ADR-0005): the
+/// writer's `/proc/<pid>/fd/<fd>` names `socket:[<inode>]`; the inode
+/// looks its endpoints up in `/proc/net/tcp` (and `tcp6`, `udp`),
+/// where one connection lists once per process, each with its own
+/// socket inode; the peer is the canonical sorted endpoint pair,
+/// identical for both directions of one connection.
+pub fn resolve_socket_peer(pid: u32, fd: u32) -> Option<String> {
+    let link = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
+    let text = link.to_string_lossy().to_string();
+    let inode = text
+        .strip_suffix(']')
+        .and_then(|rest| rest.strip_prefix("socket:["))?;
+    let inode: u64 = inode.parse().ok()?;
+    five_tuple_by_inode(inode)
+}
+
+/// The `/proc/net/{tcp,tcp6,udp}` face: one line per socket, the
+/// columns `sl local rem st ... uid timeout inode`. The addresses ride
+/// hex: `AABBCCDD:port` little-endian ip; parse to dotted form.
+fn five_tuple_by_inode(inode: u64) -> Option<String> {
+    let tables = ["tcp", "tcp6", "udp", "udp6"];
+    for table in tables {
+        let data = std::fs::read_to_string(format!("/proc/net/{table}")).ok()?;
+        for line in data.lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // the netstat face: sl local rem st tx-rx tr tm retr uid
+            // timeout inode ... - the inode rides column 9, the pointer
+            // columns continue past it
+            if cols.len() < 10 {
+                continue;
+            }
+            let found = cols[9].parse::<u64>().ok();
+            if found != Some(inode) {
+                continue;
+            }
+            let local = endpoint(cols[1])?;
+            let remote = endpoint(cols[2])?;
+            let mut pair = [local, remote];
+            pair.sort();
+            return Some(format!("{table}:{}={table}:{}", pair[0], pair[1]));
+        }
+    }
+    None
+}
+
+/// One `/proc/net/` endpoint: `AABBCCDD:PORT` hex (little-endian ip4,
+/// net byte order ip6) to a stable dotted face.
+fn endpoint(hex: &str) -> Option<String> {
+    let (addr, port) = hex.rsplit_once(':')?;
+    let port = u16::from_str_radix(port, 16).ok()?;
+    let bytes: Vec<u8> = (0..addr.len() / 2)
+        .map(|i| u8::from_str_radix(&addr[i * 2..i * 2 + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let ip = match bytes.len() {
+        4 => {
+            let mut b = bytes.clone();
+            b.reverse();
+            b.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(".")
+        }
+        _ => hex.to_lowercase(),
+    };
+    Some(format!("{ip}:{port}"))
+}
+
+/// The sample class face (ADR-0005): the transport comes from the map
+/// the tap drains.
+pub const TRANSPORT_PIPE: &str = "stdio-pipe";
+pub const TRANSPORT_TCP: &str = "tcp";
+
 /// Resolve the parent pid of `pid` through `/proc/<pid>/status` (the
 /// `PPid` line) and cache the answer for `ttl`. A process that has
 /// exited resolves to `0`; the cache entry drops. The cache answers
