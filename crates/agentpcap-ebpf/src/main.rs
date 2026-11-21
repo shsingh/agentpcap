@@ -1,13 +1,14 @@
 // The agentpcap probe. The alpha1 tap: a tracepoint on the write
 // syscall that pushes one pipe sample per write into the `pipe-events`
-// queue and keeps the canary counter current.
-// Spec: docs/spec.md#5-collectors. The ppid lineage lands with P003.
+// queue and keeps the canary counter current; the fork probe feeds the
+// lineage map so every sample knows its writer's parent.
+// Spec: docs/spec.md#5-collectors.
 #![no_std]
 #![no_main]
 
 use aya_ebpf::helpers::{bpf_get_current_pid_tgid, bpf_probe_read_user_buf};
 use aya_ebpf::macros::{map, tracepoint};
-use aya_ebpf::maps::{Array, Queue};
+use aya_ebpf::maps::{Array, LruHashMap, Queue};
 use aya_ebpf::programs::TracePointContext;
 
 /// Wire format: must match the collector crate's `PipeSample` exactly
@@ -36,6 +37,28 @@ const SLOT_READ_FAIL: u32 = 1;
 const SLOT_PUSH_OK: u32 = 2;
 const SLOT_PUSH_FAIL: u32 = 3;
 
+#[map(name = "lineage")]
+static mut LINEAGE: LruHashMap<u32, u32> = LruHashMap::with_max_entries(8192, 0);
+
+/// The fork probe: feed the lineage map (child pid -> parent pid).
+/// sched_process_fork context, format-verified on this kernel:
+/// parent_pid at 12 bytes (u32), child_pid at 20 bytes (u32).
+#[tracepoint]
+pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
+    let parent: u32 = match unsafe { ctx.read_at::<u32>(12) } {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let child: u32 = match unsafe { ctx.read_at::<u32>(20) } {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    unsafe {
+        let _ = LINEAGE.insert(&child, &parent, 0);
+    }
+    0
+}
+
 #[tracepoint]
 pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
     // sys_enter_write tracepoint context (format-verified on this
@@ -58,9 +81,14 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
         if let Some(slot) = CANARY.get_ptr_mut(SLOT_INVOKE) {
             *slot += 1;
         }
+        let pid: u32 = (bpf_get_current_pid_tgid() >> 32) as u32;
+        let ppid: u32 = unsafe { match LINEAGE.get(&pid) {
+            Some(parent) => *parent,
+            None => 0,
+        } };
         let mut sample = PipeSample {
-            pid: (bpf_get_current_pid_tgid() >> 32) as u32,
-            ppid: 0,
+            pid,
+            ppid,
             len: take as u32,
             pad: [0; 4],
             first_bytes: [0u8; 32],
