@@ -56,6 +56,22 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
         count
     };
 
+    // capture filter: only JSON-RPC candidate lines and the calibration
+    // sentinel ride the queue (spec framing: MCP over stdio is line-
+    // delimited JSON-RPC starting `{"jsonrpc"`). Everything else is
+    // non-agent traffic and never becomes a sample.
+    unsafe {
+        let mut probe: [u8; 16] = [0u8; 16];
+        if bpf_probe_read_user_buf(buf as *const u8, &mut probe).is_err() {
+            return 0;
+        }
+        let jsonrpc = probe.starts_with(b"{\"jsonrpc\"");
+        let sentinel = probe.starts_with(b"agentpcap-c");
+        if !(jsonrpc || sentinel) {
+            return 0;
+        }
+    }
+
     unsafe {
         if let Some(slot) = CANARY.get_ptr_mut(SLOT_INVOKE) {
             *slot += 1;
