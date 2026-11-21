@@ -1,0 +1,9 @@
+[package]
+name = "agentpcap-collector"
+description = "agentpcap collector crate: C003 pipe collector userspace match contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "agentpcap_collector"
