@@ -37,14 +37,14 @@ pub struct PipeSample {
     pub len: u32,
     pad: [u8; 4],
     /// The first payload bytes of the write buffer.
-    pub first_bytes: [u8; 32],
+    pub first_bytes: [u8; 256],
 }
 
 // SAFETY: the struct is POD (fixed size, no padding-sensitive fields in
 // use) and the wire layout is const-locked; aya reads it by value.
 unsafe impl aya::Pod for PipeSample {}
 
-pub const PAYLOAD_BYTES_CAP: usize = 32;
+pub const PAYLOAD_BYTES_CAP: usize = 256;
 
 /// The parent-pid cache: a pid resolved recently, cached with the time
 /// of the resolution. The caller drops stale entries.
@@ -91,7 +91,7 @@ pub fn resolve_parent(pid: u32, cache: &mut ParentCache, ttl: Duration) -> u32 {
     ppid
 }
 
-const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
 
 const SAMPLE_BYTES_CAP: usize = 256;
 

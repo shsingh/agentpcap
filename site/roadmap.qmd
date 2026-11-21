@@ -9,8 +9,12 @@ The live board carries the same set of cards:
 
 ## Current phase
 
-2026.01-alpha1 build-out. The specification is in force and renders in CI; the
-implementation starts with the workspace skeleton and the stdio class.
+`2026.01-alpha1` gate evidence complete: the build-out shipped — the
+ledger, the conformance fixtures, the operator CLI, the tap runtime and
+the alpha1 scenario all closed ([the gate report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-alpha1.md)).
+The gate PR carries the release notes; the signed tag `2026.01-alpha1`
+and the attested build follow the merge. The wire class
+(2026.01-alpha2) starts next.
 
 ## Release gates
 
@@ -21,6 +25,12 @@ implementation starts with the workspace skeleton and the stdio class.
 | 2026.01-rc1 | full fleet with seeded shadow deployments | M001 recall, M002 overhead delta, M003 full matrix, M004 fidelity, M005 triage precision, M006 handoff latency — gate rule: M001 passing with M003 at M002 cost |
 
 ## 2026.01-alpha1 — MVP: the stdio class, end to end
+
+Shipped with the gate PR. Evidence: [the 2026.01-alpha1 gate
+report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-alpha1.md)
+(the scenario cell, the conformance fixtures, the CLI cells; the cell
+receipts live in
+[tests/matrix/LEDGER.md](https://github.com/shsingh/agentpcap/blob/main/tests/matrix/LEDGER.md)).
 
 | Issue | Title | Labels |
 |---|---|---|

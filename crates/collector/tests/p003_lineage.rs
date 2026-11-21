@@ -45,7 +45,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "echo agentpcap-p003-marker >> '{scratch_c}'; sleep 5"
+            "echo '{{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"p003-marker\"}}' >> '{scratch_c}'; sleep 5"
         ))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -56,7 +56,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     let settled = (0..40).any(|_| {
         std::thread::sleep(Duration::from_millis(50));
         std::fs::read_to_string(&scratch)
-            .map(|s| s.contains("agentpcap-p003-marker"))
+            .map(|s| s.contains("\"method\":\"p003-marker\""))
             .unwrap_or(false)
     });
     assert!(settled, "the child's write landed");
@@ -72,10 +72,11 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
             match queue.pop(0) {
                 Ok(s) => {
                     let prefix = String::from_utf8_lossy(
-                        &s.first_bytes[..(s.len as usize).min(32)],
+                        &s.first_bytes[..
+                            (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)],
                     )
                     .to_string();
-                    if prefix.starts_with("agentpcap-p003") && !saw_marker_pid {
+                    if prefix.contains("\"method\":\"p003-marker\"") && !saw_marker_pid {
                         saw_marker_pid = true;
                         sample_pid = s.pid;
                         raw_ppid = s.ppid;
