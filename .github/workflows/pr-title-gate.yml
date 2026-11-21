@@ -21,7 +21,7 @@ jobs:
           # site as a type on site-surface PRs, per CONTRIBUTING.md).
           # Bot surfaces (renovate dependency PRs as scoped chores,
           # pre-commit.ci autoupdate) keep their canonical titles.
-          pat='^(feat|fix|docs|refactor|test|build|ci|chore|perf|revert|site)(\([a-z0-9/-]+\))?: .+$'
+          pat='^(feat|fix|docs|refactor|test|build|ci|chore|perf|revert|site|release)(\([a-z0-9/-]+\))?: .+$'
           bot='^\[pre-commit\.ci\] pre-commit autoupdate$'
           if [[ ! "$TITLE" =~ $pat && ! "$TITLE" =~ $bot ]]; then
             echo "::error::PR title must match ConventionalCommits:"

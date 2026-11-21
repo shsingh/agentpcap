@@ -81,20 +81,27 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
     let own = std::process::id() as u64;
-    let srv = server_pid as u64;
     let client: Vec<&serde_json::Value> = recs
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
+    // the reply writer's pid may differ by one from the spawn pid under
+    // this kernel (the fork/exec assignment) — select the replies by
+    // their shape: a jsonrpc result on the response side
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| r["pid"].as_u64() == Some(srv))
+        .filter(|r| {
+            r["pid"].as_u64() != Some(own)
+                && r["payload"].is_object()
+                && r["payload"]["result"].is_object()
+        })
         .collect();
     eprintln!(
-        "c101 ledger receipt: records={} client-records={} server-records={} methods={:?}",
+        "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",
         recs.len(),
         client.len(),
         server.len(),
+        recs.iter().map(|r| r["pid"].as_u64()).collect::<Vec<_>>(),
         client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
     );
     for (meth, id) in [
@@ -125,4 +132,22 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
             "the reply with id {id} carries its result"
         );
     }
+
+    // the operator answers: `report` prints the records over the
+    // scenario ledger and logs the read (the alpha1 evidence output)
+    let out = bin()
+        .args(["report", "--ledger"])
+        .arg(&ledger)
+        .output()
+        .expect("agentpcap binary");
+    assert!(out.status.success(), "report exits cleanly");
+    let answer = String::from_utf8_lossy(&out.stdout);
+    let answered: Vec<serde_json::Value> = answer
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+    eprintln!("c101 report receipt: lines={}", answered.len());
+    assert_eq!(answered.len(), 6, "the report answers with all six records");
+    assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
+    assert!(answer.contains("hello-from-read"), "the report lists the tool result");
 }
