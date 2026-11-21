@@ -95,7 +95,7 @@ struct Pending {
 }
 
 struct PendingBucket {
-    by_id: HashMap<String, Pending>,
+    by_id: HashMap<String, Vec<Pending>>,
 }
 
 /// One known session: the capability face and the burst cadence window.
@@ -177,8 +177,10 @@ impl Reassembler {
             let Some(mut bucket) = self.pending.remove(&k) else {
                 continue;
             };
-            for (_, p) in bucket.by_id.drain() {
-                out.push(self.emit_merged(None, &p, Value::Null, vec!["no-response".into()]));
+            for ((_, mut parked)) in bucket.by_id.drain() {
+                for p in parked.drain(..) {
+                    out.push(self.emit_merged(None, &p, Value::Null, vec!["no-response".into()]));
+                }
             }
         }
         out
@@ -189,7 +191,9 @@ impl Reassembler {
     fn on_request(&mut self, frame: Frame, method: String, id: String) -> Vec<Event> {
         // The socket classes key pending by the session's own peer; the
         // pipe class parks requests under the client pid until a
-        // response nominates the server pair.
+        // response nominates the server pair. The same id may park on
+        // two channels of one client: both stay preserved, never
+        // overwritten.
         let key = if frame.peer.starts_with("pipe:") {
             format!("req:{}", frame.pid)
         } else {
@@ -199,30 +203,46 @@ impl Reassembler {
             .pending
             .entry(key)
             .or_insert_with(|| PendingBucket { by_id: HashMap::new() });
-        bucket.by_id.insert(
-            id.clone(),
-            Pending {
-                transport: frame.transport.clone(),
-                peer: frame.peer.clone(),
-                req: frame.payload.clone(),
-                method,
-                id,
-                pid: frame.pid,
-                comm: frame.comm.clone(),
-                tap_evidence: frame.tap_evidence.clone(),
-            },
-        );
+        bucket.by_id.entry(id.clone()).or_default().push(Pending {
+            transport: frame.transport.clone(),
+            peer: frame.peer.clone(),
+            req: frame.payload.clone(),
+            method,
+            id,
+            pid: frame.pid,
+            comm: frame.comm.clone(),
+            tap_evidence: frame.tap_evidence.clone(),
+        });
         vec![]
     }
 
     // -- notification path ----------------------------------------------
 
     fn on_notification(&mut self, frame: Frame) -> Vec<Event> {
-        let key = self.session_key_for(&frame);
-        let verdict = if self.method_is_a2a(&frame.payload) {
-            Verdict::A2a
+        // The client side of a pipe session also sends notifications
+        // (notifications/initialized rides the request channel after the
+        // init pair). Where the writer is the client that owns a
+        // pending bucket, the record keys that client face, never a
+        // pair the client is not a member of.
+        let pipe_class = frame.peer.starts_with("pipe:");
+        let mut client_face = false;
+        let key = if pipe_class && self.pending.contains_key(&format!("req:{}", frame.pid)) {
+            client_face = true;
+            format!("client:{}", frame.pid)
         } else {
+            self.session_key_for(&frame)
+        };
+        let m = frame
+            .payload
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default();
+        let verdict = if self.method_is_a2a(m) {
+            Verdict::A2a
+        } else if self.method_is_mcp(m) {
             Verdict::Mcp
+        } else {
+            Verdict::AgentUnidentified
         };
         let payload = Some(frame.payload.clone());
         let session = self
@@ -235,7 +255,10 @@ impl Reassembler {
         let proto = session.protocol_version.clone();
         let mut evidence = frame.tap_evidence.clone();
         evidence.push(format!("chan:{}", frame.peer));
-        evidence.push(format!("reassembled:notify"));
+        evidence.push("reassembled:notify".into());
+        if client_face {
+            evidence.push("notification:client-side".into());
+        }
         let ev = Event {
             ts: now_rfc3339(),
             host: self.host.clone(),
@@ -266,42 +289,64 @@ impl Reassembler {
         // Bind the response to its pending request. The pipe class
         // pairs by the writer's parent (the client that owns the
         // pending bucket) — the pairing parent answers which server.
-        // Where the parent does not resolve (a writer that died inside
-        // the pop window), the exact id answers when it names one
-        // pending request across every bucket; an id that names more
-        // than one stays honest as an orphan.
+        // The by-id fallback fires ONLY for a writer that died inside
+        // the pop window (the parent unresolvable or the fd
+        // unresolved): a resolved, unrelated channel never reads
+        // another client's id. One id parked on more than one request
+        // stays ambiguous: the response orphans and both requests stay
+        // preserved, never overwritten.
         let pipe_class = frame.peer.starts_with("pipe:");
+        let dying_writer = frame.ppid == 0
+            || frame
+                .tap_evidence
+                .iter()
+                .any(|e| e == "fd-unresolved-at-pop");
         let mut bound: Option<(String, Pending)> = None;
         let mut pair_face = false;
         if pipe_class && frame.ppid > 0 {
             let bucket_key = format!("req:{}", frame.ppid);
-            if let Some(p) = self
-                .pending
-                .get_mut(&bucket_key)
-                .and_then(|b| b.by_id.remove(&id))
-            {
-                bound = Some((format!("pipe-pair:{}:{}", frame.ppid, frame.pid), p));
-                pair_face = true;
+            if let Some(b) = self.pending.get_mut(&bucket_key) {
+                if let Some(v) = b.by_id.get_mut(&id) {
+                    if v.len() == 1 {
+                        let p = v.remove(0);
+                        bound = Some((format!("pipe-pair:{}:{}", frame.ppid, frame.pid), p));
+                        pair_face = true;
+                    }
+                }
             }
         }
         if bound.is_none() {
-            let hits: Vec<String> = self
+            let matches: usize = self
                 .pending
-                .iter()
-                .filter(|(_, b)| b.by_id.contains_key(&id))
-                .map(|(k, _)| k.clone())
-                .collect();
-            if hits.len() > 1 {
+                .values()
+                .map(|b| b.by_id.get(&id).map_or(0, |v| v.len()))
+                .sum();
+            if matches > 1 || (matches == 1 && !dying_writer) {
+                // ambiguous id reuse, or a live writer no pairing owns:
+                // the response stays honest as an orphan, the parked
+                // requests stay preserved
                 return vec![self.emit_orphan(
                     frame,
-                    vec!["orphan-response".into(), "pair-unresolved:ambiguous-id".into()],
+                    vec![
+                        "orphan-response".into(),
+                        "pair-unresolved:ambiguous-id".into(),
+                    ],
                 )];
             }
-            if hits.len() == 1 {
-                if let Some(b) = self.pending.get_mut(&hits[0]) {
-                    if let Some(p) = b.by_id.remove(&id) {
-                        // the session keys on the request's own channel
-                        bound = Some((p.peer.clone(), p));
+            if matches == 1 {
+                let keys: Vec<String> = self
+                    .pending
+                    .iter()
+                    .filter(|(_, b)| b.by_id.contains_key(&id))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                if let Some(b) = self.pending.get_mut(&keys[0]) {
+                    if let Some(v) = b.by_id.get_mut(&id) {
+                        if v.len() == 1 {
+                            let p = v.remove(0);
+                            // the session keys on the request's own channel
+                            bound = Some((p.peer.clone(), p));
+                        }
                     }
                 }
             }
@@ -309,14 +354,24 @@ impl Reassembler {
         let Some((bind_key, p)) = bound else {
             return vec![self.emit_orphan(frame, vec!["orphan-response".into()])];
         };
-        // the merge binds the RESULT member: the capability face and the
-        // tool names read the response's result, never the envelope
-        let result = frame.payload.get("result").cloned().unwrap_or(Value::Null);
+        // the merge binds the result member, or the error member when
+        // the response carries one: the error face rides the evidence
+        // and the payload both
+        let error_face = frame.payload.get("error").is_some();
+        let result = frame
+            .payload
+            .get("result")
+            .cloned()
+            .or_else(|| frame.payload.get("error").cloned())
+            .unwrap_or(Value::Null);
         let mut extra = vec![];
         if pair_face {
             extra.push(format!("chan:{}", frame.peer));
         } else {
             extra.push("pair:by-id".into());
+        }
+        if error_face {
+            extra.push("error-response".into());
         }
         let ev = self.emit_merged(Some(bind_key), &p, result, extra);
         vec![ev]
@@ -381,10 +436,14 @@ impl Reassembler {
         } else {
             None
         };
-        let verdict = if self.method_is_a2a(&p.req) {
+        let verdict = if self.method_is_a2a(&p.method) {
             Verdict::A2a
-        } else {
+        } else if self.method_is_mcp(&p.method) {
             Verdict::Mcp
+        } else {
+            // an unknown method face stays honest: the verdict comes
+            // from the protocol semantics, never from a catalog
+            Verdict::AgentUnidentified
         };
         let event_name = event_name_for(&p.method);
         let dedup = format!("{}:{}:{}:{}", p.transport, peer, event_name, p.id);
@@ -419,7 +478,9 @@ impl Reassembler {
     /// the shape features and, on repeated frames inside the burst
     /// window on one session, the cadence line (spec section 6).
     fn emit_orphan(&mut self, frame: Frame, mut features: Vec<String>) -> Event {
-        let key = self.session_key_for(&frame);
+        // the orphan keys its own channel: no pair bound, so no pipe
+        // pair face rides the record
+        let key = frame.peer.clone();
         let (burst_line, orphan_n) = {
             let session = self
                 .sessions
@@ -486,11 +547,13 @@ impl Reassembler {
         }
     }
 
-    fn method_is_a2a(&self, payload: &Value) -> bool {
-        matches!(
-            payload.get("method").and_then(|m| m.as_str()),
-            Some("message/send") | Some("message/stream") | Some("tasks/get") | Some("tasks/send")
-        )
+    fn method_is_a2a(&self, method: &str) -> bool {
+        method == "message/send" || method == "message/stream" || method.starts_with("tasks/")
+    }
+
+    fn method_is_mcp(&self, method: &str) -> bool {
+        method == "initialize" || method == "tools/list" || method == "tools/call"
+            || method.starts_with("notifications/")
     }
 }
 
