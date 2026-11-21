@@ -7,7 +7,7 @@
 // framing and the tools/call, and the excerpt rides the receipt.
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
 use std::time::Duration;
