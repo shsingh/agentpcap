@@ -100,7 +100,7 @@ python3 -c "pass"  # the conformance fixtures live in code: L101-L104
 - **Conformance** (the golden fixtures answer their verdicts):
 
 ```bash
-cargo test -p agentpcap-ledger --test l10_fixtures
+cargo test -p agentpcap-ledger --test l101_fixtures
 ```
 
 - **The eBPF object** (probe objects are build artifacts, never
