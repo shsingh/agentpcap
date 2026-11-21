@@ -83,8 +83,8 @@ tag, one sweep updates the operator-facing set and its render gates:
   paper render refreshed on the site.
 - The render gates: the paper census rc=0; the specification's mmark and
   xml2rfc renders rc=0.
-- The mirrors: the tablet `/_inbox` paper copy and the Obsidian project
-  folder refreshed to the released revision.
+- The mirrors: the paper and notes copies the maintainer publishes
+  outside this repository are refreshed to the released revision.
 
 The sweep rides the gate's release pull request: one pull request, the
 evidence in its body. A gate closes on code evidence and on the updated
