@@ -213,6 +213,17 @@ This document has no IANA actions.
 
 The repository implements this specification in Rust: the eBPF probe and userspace split through aya, the ledger writer, and the operator CLI, with the Python evaluation harness under `eval/`. CI renders this document to text, HTML, and PDF per push of the source; the rendered files are build outputs and are never committed. The project carries the MIT licence for its original code; vendored sources keep their upstream licences and are inventoried in the repository's [NOTICE.md](../NOTICE.md). This document is the canonical specification; surfaces that cite it link it by heading anchor.
 
+### 17.1 Release signing and provenance
+
+Release operations bind every named release to an operator-verifiable chain. The chain covers the tag, the merge history, and the build provenance of each asset.
+
+1. The release tag MUST be signed. Each named release tag (`YYYY.NN` with an optional `-alphaN` or `-rcN` qualifier) is an annotated tag created with `git tag -s`. The tag points at the merge commit of the release-gate pull request. An unsigned tag MUST NOT move the release state, and the release MUST NOT republish from a re-pointed tag.
+2. Every release asset MUST carry build provenance. The release workflow attests each asset with a SLSA v1.0 build provenance record, generated with a SHA-pinned, GitHub-verified action under a short-lived Sigstore identity. The attestation is the checksum of record and carries the asset digest.
+3. Consumers MUST verify in order: the tag signature, the required signatures on the merge history, then the provenance of each downloaded asset. Provenance verification uses the repository's attestation store with the provenance predicate type.
+4. This build configuration is SLSA v1.0 Build Level 2: the build runs on ephemeral, source-declared, hosted runners. Build Level 3 arrives when the build moves behind an isolated, shared reusable workflow. Release notes MUST state the level and MUST NOT claim a higher one.
+5. The release workflow runs only on pushed release tags. It MUST refuse a tag that carries no committed gate report under `releases/`, MUST build and attest each asset, and MUST publish the release with that gate report as the release notes. The gate report is authored by the release-gate pull request.
+6. Source archives rendered from the signed tag carry the tag hash; they carry no separate attestation record.
+
 ## References
 
 - Model Context Protocol specification, revision 2025-11-25, transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports

@@ -1,5 +1,5 @@
-# ADR-0003 binds release assets to SLSA provenance; tags are GPG-signed.
-# docs/adr/0003-signed-releases.md
+# SLSA provenance and signed releases are normative in the spec:
+# docs/spec.md#171-release-signing-and-provenance (§17.1)
 
 name: release
 
