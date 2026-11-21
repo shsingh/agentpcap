@@ -20,7 +20,7 @@ pub struct PipeSample {
     ppid: u32,
     len: u32,
     pad: [u8; 4],
-    first_bytes: [u8; 32],
+    first_bytes: [u8; 128],
 }
 
 const _: () = assert!(core::mem::size_of::<PipeSample>() == 144);
