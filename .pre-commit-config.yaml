@@ -11,7 +11,7 @@ repos:
       - id: trailing-whitespace
         exclude: '.*\.(pem|crt|key)$'   # never rewrite cert/key material
       - id: end-of-file-fixer
-        exclude: '.*\.(pem|crt|key)$'
+        exclude: '.*\.(pem|crt|key)$|^crates/ledger/tests/fixtures/ledger/04-torn\.jsonl$'
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: check-yaml
