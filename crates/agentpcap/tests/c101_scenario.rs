@@ -127,7 +127,7 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         recs.len(),
         client.len(),
         server.len(),
-        recs.iter().map(|r| r["pid"].as_u64()).collect::<Vec<_>>(),
+        recs.iter().map(|r| format!("{}/{}", r["pid"], r["peer"])).collect::<Vec<_>>(),
         client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
     );
     for (meth, id) in [
