@@ -52,10 +52,15 @@ the commit and the gate that ran in the `agentpcap-build-dev` VM
 
 | Cell | Spec anchor | Assertion | Status |
 |------|-------------|-----------|--------|
-| L101 | `docs/spec.md#7-the-flow-ledger` | golden fixtures answer `chain-ok`: genesis and the rotated pair (carry verified) | RED: `conformance::run` missing |
-| L102 | `docs/spec.md#7-the-flow-ledger` | tampered fixture answers `chain-broken` | RED: `conformance::run` missing |
-| L103 | `docs/spec.md#7-the-flow-ledger` | torn fixture answers `torn-tail` | RED: `conformance::run` missing |
-| L104 | `docs/spec.md#4-event-record-schema` | schema-mismatch fixture answers `schema-mismatch`; a writer record carrying a foreign `schema_version` is refused | RED: refusal and runner missing |
+| L101 | `docs/spec.md#7-the-flow-ledger` | golden fixtures answer `chain-ok`: genesis and the rotated pair; the cross-file carry is verified exactly against the closed segment's tail hash | GREEN on `feat/2026.01-alpha1` |
+| L102 | `docs/spec.md#7-the-flow-ledger` | tampered fixture answers `chain-broken` | GREEN on `feat/2026.01-alpha1` |
+| L103 | `docs/spec.md#7-the-flow-ledger` | torn fixture answers `torn-tail` | GREEN on `feat/2026.01-alpha1` |
+| L104 | `docs/spec.md#4-event-record-schema` | schema-mismatch fixture answers `schema-mismatch`; a writer record carrying a foreign `schema_version` is refused and the chain continues for a versionless record | GREEN on `feat/2026.01-alpha1` |
+
+Fixture cases (`crates/ledger/tests/fixtures/ledger/`): `01-genesis`,
+`02-rotated` (`+ .1` continuation), `03-tampered`, `04-torn`,
+`05-schema-mismatch`. A continuation segment carries no own `.expect`;
+it belongs to its base case.
 
 ## Green gate rule
 
