@@ -56,7 +56,7 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     // stdout writes on a real pipe the tap records by inode
     let reader = std::thread::spawn(move || {
         let mut text = String::new();
-        for l in std::io::BufRead::lines(&mut server_out) {
+        for l in std::io::BufReader::new(&mut server_out).lines() {
             match l {
                 Ok(line) => {
                     text.push_str(&line);
