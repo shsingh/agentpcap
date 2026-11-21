@@ -94,9 +94,11 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     eprintln!("c101 receipt: server_pid={server_pid} replies={}", replied.lines().count());
     assert_eq!(replied.lines().count(), 3, "three answers on the reply pipe");
 
-    // the ledger answers, record by record: the client pid carries the
-    // three framed requests (mcp, ids 1/2/3); the server pid carries
-    // the three replies (ids 1/2/3, the result text intact)
+    // the tap's push receipts: the counters tell whether the reply
+    // samples ever pushed
+    let receipt = std::fs::read_to_string(format!("{}.push-receipt", ledger.display()))
+        .unwrap_or_else(|_| "(missing receipt file)".into());
+    eprintln!("c101 push receipt: {}", receipt.trim());
     let text = std::fs::read_to_string(&ledger).unwrap();
     let recs: Vec<serde_json::Value> = text
         .lines()
