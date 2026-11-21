@@ -58,7 +58,7 @@ Definitions used throughout:
 
 - **Capability fingerprint**: a stable hash over the server's advertised capabilities from the initialize response; the value whose change between sessions is capability drift.
 
-- **Opaque mode** / **attributed mode**: capture states per Section 8; opaque is the default.
+- **Attributed mode** / **opaque mode**: capture states per Section 8; attributed is the default, opaque is the opt-out.
 
 - **Unidentified flow**: traffic the classifier cannot bind to a named protocol but that carries agent-shaped transport features; a first-class ledger event.
 
@@ -122,7 +122,7 @@ The event record is the project's interface contract; both deployment topologies
 | dedup | string | MUST | Coexistence deduplication key (Section 11). |
 | evidence | array | SHOULD | Header, SNI, DNS, or timing features that drove classification. |
 
-Arguments, payloads, prompts, and tool results MUST NOT be stored by default in any field. A build MAY add redacted diagnostic fields; the schema MUST then note the redaction rule.
+The event record carries the tool call's method, arguments, and result. Payload content rides the record: capture runs in attributed mode by default (Section 8), and retention or redaction are operator settings. A build MAY add redacted diagnostic fields; the schema MUST then note the redaction rule.
 
 ## 5. Collectors and transport coverage
 
@@ -160,7 +160,7 @@ The ledger is a per-host (and per-node) append-only file of event records in JSO
 
 ## 8. Modes
 
-Opaque mode is the default. Opaque-mode capture MUST NOT require TLS termination of any session, and operates on transport features, headers visible before encryption, DNS and SNI evidence, and pipe plaintext. Attributed mode is opt-in per host boundary: the TLS-boundary collector (C002) captures plaintext at the host's own TLS libraries through uprobes, in the demonstrated manner of Pixie and AgentSight. The mode that produced each event MUST be recorded in the event's `mode` field. A build MUST NOT enable attributed mode by default and MUST document its own capability requirements.
+Attributed mode is the default. The TLS-boundary collector (C002) captures plaintext at the host's own TLS libraries through uprobes, in the demonstrated manner of Pixie and AgentSight, so the record carries the method, the arguments, and the result without extra operator work. Attributed capture MUST NOT require TLS termination of any session or a change to any path. Opaque mode (metadata-only: transport features, headers visible before encryption, DNS and SNI evidence) remains available and MAY be selected per host. The mode that produced each event MUST be recorded in the event's `mode` field. A build MUST document its own capability requirements.
 
 ## 9. Operator CLI
 
@@ -197,13 +197,13 @@ The ledger's event stream is the input surface for a criteria gate. A policy pas
 
 The evaluation plan defines six measurements: shadow-discovery recall, overhead, transport coverage, ledger fidelity, unidentified-flow triage, and gate handoff latency. The binary SHOULD expose counters that let the Python evaluation harness measure M001 through M006 without instrumenting the tap internals; the harness lives in the repository's `eval/` directory and consumes only the CLI and export surfaces. Harness overhead MUST be kept out of the tap's measurement path; M002 measures tap-on versus tap-off deltas with the identical harness.
 
-## 14. Privacy and data minimization
+## 14. Privacy and capture data handling
 
-Opaque mode is the default; arguments and payloads MUST NOT be stored by default. Tool names and capability fingerprints are the stored surface. Ledger access MUST be logged. The operator vantage is the lawful one: an organization tapping its own estate. The instrument MUST NOT ship any telemetry of its own beyond what the operator's own paths carry.
+Attributed capture with payload content is the default: the ledger records the operator's tool traffic with the method, arguments, and result per event. Retention, redaction, and purge are operator settings; any build default MUST be documented. Ledger access MUST be logged. The instrument runs inside one boundary — the estate the operator owns — and MUST NOT ship any telemetry of its own beyond what the operator's own paths carry.
 
 ## 15. Security considerations
 
-The tap is a host-resident, kernel-leg observer; the eBPF program surface is attack surface and MUST stay minimal, pinned, and reviewed with each build. Probe programs taken from upstream are re-vendored with license records and verified hashes; the build MUST NOT load unpinned probe bytecode. The ledger contains operational metadata about agent activity and is itself sensitive: its access log, rotation, and tamper chain exist for that reason. Read-only enforcement is the product's own safety property: a tap that becomes writable memory on the host defeats its threat model. Classification of agent workflows from metadata is dual-use; the metadata literature places that boundary precisely, and this spec fixes the defensive defaults above (opaque by default, no arguments stored, logged access).
+The tap is a host-resident, kernel-leg observer; the eBPF program surface is attack surface and MUST stay minimal, pinned, and reviewed with each build. Probe programs taken from upstream are re-vendored with license records and verified hashes; the build MUST NOT load unpinned probe bytecode. The ledger contains operational metadata about agent activity and is itself sensitive: its access log, rotation, and tamper chain exist for that reason. Read-only enforcement is the product's own safety property: a tap that becomes writable memory on the host defeats its threat model. Classification of agent workflows from metadata is dual-use; the metadata literature places that boundary precisely, and this spec fixes the defaults above (attributed by default with tool messages recorded, scope-locked deployment, and logged access).
 
 ## 16. IANA considerations
 

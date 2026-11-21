@@ -17,7 +17,7 @@ its core rules:
   hook set.
 
 Security-sensitive surfaces — the read-only invariant, the event
-schema, the ledger chain, the data-minimization defaults, the eBPF
+schema, the ledger chain, the capture-scope boundaries, the eBPF
 capability set — carry extra review rules; see
 [CONTRIBUTING.md](https://github.com/shsingh/agentpcap/blob/main/CONTRIBUTING.md)
 and [SECURITY.md](security.qmd).

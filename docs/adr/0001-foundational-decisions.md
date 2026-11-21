@@ -1,4 +1,4 @@
-# 0001 — Foundational decisions: read-only tap, opaque default, Rust, MIT
+# 0001 — Foundational decisions: read-only tap, attributed default, Rust, MIT
 
 Status: accepted
 
@@ -19,9 +19,10 @@ The context each choice answers:
    routing cooperation and a blast radius the project does not want;
    the surveyed gateway class carries that shape already [agentgateway,
    docs](https://docs.solo.io/agentgateway/standalone/latest/documentation/about/introduction).
-2. A capture posture that stores arguments or prompts makes the
-   instrument a content-retention system; the operator-facing value is
-   tool and capability metadata, which survives without payloads.
+2. The record's value lives in what crossed the wire: a ledger that
+   carries only shapes and fingerprints answers "can this happen", while
+   incident review needs "what happened". Plaintext is available at the
+   host's own TLS boundary before encryption; the host is the operator's.
 3. The instrument is an always-on host sensor with kernel-side
    programs; the write path must be predictable, the binaries static,
    and the eBPF leg in one language with the userspace
@@ -35,9 +36,7 @@ The context each choice answers:
    into, or terminate any traffic path; capture loss degrades the
    ledger and never the path. The invariant is a property of every
    release, tested per build.
-2. **Opaque by default, nothing stored by default.** Attributed mode
-   (TLS-boundary uprobes) is opt-in per host. Tool names and capability
-   fingerprints are stored; arguments, prompts and payloads are not.
+2. **Attributed by default, payloads recorded from day one.** The record's value lives in what crossed the wire. The TLS-boundary collector (C002) runs without operator work, and the ledger stores the method, the arguments, and the result alongside tool names and capability fingerprints. Opaque mode (metadata-only) stays available as an opt-out per host. Retention and redaction are operator settings; the access log and the hash chain keep the payload-bearing ledger auditable.
 3. **Rust with aya.** The eBPF probe and the userspace share one
    language and one toolchain; binaries are static; the ledger writer
    runs without garbage-collection pauses.
@@ -54,9 +53,10 @@ These choices are recorded normatively in `docs/spec.md` (Sections 1,
 
 - The read-only invariant bounds what the tap can offer: it complements
   gateways and consumers rather than replacing enforcement.
-- The minimization defaults bound the evidence the ledger carries; the
-  unidentified-flow pass and the capability fingerprints are the design
-  answers to that bound.
+- The attributed default fills the ledger with its full evidence: the
+  payload-bearing record is what incident review and the policy gate
+  read. The scope-locked deployment, the access log and the tamper chain
+  are the controls that keep that record defensible.
 - The Rust choice fixes the build chain: `cargo`, aya with its pinned
   kernel-legend conventions, and cross-compiled static targets.
 - The MIT posture keeps the project usable everywhere; any vendored
