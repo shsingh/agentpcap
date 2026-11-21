@@ -128,13 +128,6 @@ fn p003_child_write_carries_the_parent_pid() {
         "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={}",
         counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7]
     );
-    // The lineage entry for the child, read back from the map.
-    let lineage: aya::maps::HashMap<_, u32, u32> = bpf
-        .take_map("lineage")
-        .expect("lineage map missing")
-        .try_into()
-        .expect("lineage map is not a hash map");
-    let parent_of_child = lineage.get(&child_pid, 0);
     eprintln!(
         "p003 lineage map says child {child_pid} -> {:?}; expected {me}",
         parent_of_child
