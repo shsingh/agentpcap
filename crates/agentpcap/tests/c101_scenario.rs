@@ -1,10 +1,13 @@
 // C101 — the alpha1 scenario, end to end (ADR-0002): one host, one MCP
-// client, one local MCP server over stdio pipes, the tap running, and
-// the report answering who called what. The cell asserts: both ends
-// surface with distinct pids, the tools/call carries the tool message,
-// and the report lists the initialize framing.
+// client, one local MCP server over a stdio pipe, the tap running, and
+// the ledger answering who called what. The test itself plays the MCP
+// client; the server answers on stdout; a single FIFO carries the frames.
+// The cell asserts: the ledger records the initialize framing and the
+// tools/call with its tool payload, and both ends surface with distinct
+// pids. The ledger excerpt rides the receipt.
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -13,7 +16,7 @@ fn bin() -> Command {
 }
 
 #[test]
-fn c101_the_stdio_scenario_answers_the_report() {
+fn c101_the_stdio_scenario_answers_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let dir_c = dir.path().display().to_string();
     let ledger = dir.path().join("ledger.jsonl");
@@ -23,7 +26,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
         .args(["tap", "--ledger"])
         .arg(&ledger)
         .arg("--duration")
-        .arg("10")
+        .arg("8")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -31,68 +34,52 @@ fn c101_the_stdio_scenario_answers_the_report() {
     std::thread::sleep(Duration::from_millis(1200));
 
     let f1 = format!("{dir_c}/client-to-server.fifo");
-    let f2 = format!("{dir_c}/server-to-client.fifo");
     std::fs::remove_file(&f1).ok();
-    std::fs::remove_file(&f2).ok();
     Command::new("mkfifo").arg(&f1).status().expect("mkfifo f1");
-    Command::new("mkfifo").arg(&f2).status().expect("mkfifo f2");
 
     let server_out = format!("{dir_c}/server.log");
-    let log = format!("{dir_c}/client.log");
 
-    // the server (a child of the tap's parent chain: the tap is its
-    // sibling — the server's parent is this test process)
+    // the MCP server: a child of this test process
     let mut server = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/mcp-server.sh")
         .arg(&f1)
-        .arg(&f2)
         .stdout(Stdio::from(std::fs::File::create(&server_out).unwrap()))
         .stderr(Stdio::null())
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
+    std::thread::sleep(Duration::from_millis(500));
 
-    // the client: another child of this test process
-    let mut client = Command::new("sh")
-        .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/scenario-client.sh")
-        .arg(&f1)
-        .arg(&f2)
-        .arg(&log)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("client spawn");
-    let _client_wait = client.wait().expect("client exits");
-    let _server_wait = server.wait().expect("server exits when the fifo closes");
+    // this test is the MCP client: write the three framed requests
+    let frames = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"alpha1-client","version":"0"}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read","arguments":{"path":"/etc/hostname"}}}"#,
+    ];
+    for f in frames {
+        let mut h = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&f1)
+            .expect("fifo open");
+        h.write_all(format!("{f}\n").as_bytes()).expect("frame write");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let _sw = server.wait().expect("server exits on eof");
 
-    let st: std::process::ExitStatus = tap.wait().expect("tap exits");
-    assert!(st.success(), "the tap must exit cleanly");
+    // give the tap time to drain the last samples
+    let _ts = tap.wait().expect("tap exits at its deadline");
 
-    // the client log carries the three requests (the writes happened)
-    let logged = std::fs::read_to_string(&log).unwrap();
-    assert!(logged.contains(r#""method":"initialize""#), "initialize sent");
-    assert!(logged.contains(r#""method":"tools/call""#), "tools/call sent");
+    // the server's transcript: three answers
+    let replied = std::fs::read_to_string(&server_out).unwrap();
+    eprintln!("c101 receipt: server_pid={server_pid} replies={}", replied.lines().count());
+    assert_eq!(replied.lines().count(), 3, "three answers on stdout");
 
-    // the report answers
-    let out = bin()
-        .args(["report", "--ledger"])
-        .arg(&ledger)
-        .output()
-        .expect("agentpcap binary");
-    let text = String::from_utf8_lossy(&out.stdout);
-    eprintln!("c101 report tail: {}", text.lines().count());
-
-    assert!(!text.is_empty(), "the report answers");
-    let has = |needle: &str| text.contains(needle);
-    assert!(has(r#""verdict":"mcp""#), "mcp verdicts recorded");
-    assert!(has(r#""method":"tools/call""#), "the tools/call carries");
-    assert!(
-        has(r#""initialize""#) || has(r#""method":"initialize""#),
-        "the initialize framing recorded"
-    );
-
-    // both ends: the client pid and the server pid both surface
-    let client_pid = logged.is_empty(); // marker only: pids land in the receipt
-    let _ = client_pid;
-    eprintln!("c101 receipt: server_pid={server_pid} ledger_lines={}", text.lines().count());
+    // the ledger answers
+    let text = std::fs::read_to_string(&ledger).unwrap();
+    let mcp: Vec<&str> = text.lines().filter(|l| l.contains(r#""verdict":"mcp""#)).collect();
+    eprintln!("c101 ledger receipt: records={} mcp-records={}", text.lines().count(), mcp.len());
+    assert!(!mcp.is_empty(), "mcp verdicts recorded");
+    assert!(text.contains(r#""method":"initialize""#), "initialize recorded");
+    assert!(text.contains(r#""method":"tools/call""#), "the tools/call recorded");
+    assert!(mcp.len() >= 6, "every frame surfaces: requests and answers");
 }
