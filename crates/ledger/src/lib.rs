@@ -54,7 +54,7 @@ impl From<std::io::Error> for LedgerError {
     }
 }
 
-fn trunc(body: &str) -> String {
+pub(crate) fn trunc(body: &str) -> String {
     let d = Sha256::digest(body.as_bytes());
     hex::encode(d)[..16].to_string()
 }
