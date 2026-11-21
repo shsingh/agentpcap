@@ -20,6 +20,65 @@ the maintainer's behalf.
 - One logical change per branch, merged by pull request; direct pushes
   to `main` do not happen.
 
+## Architecture Decision Records
+
+Structured decisions live in `docs/adr/`; accepted records are immutable
+and are superseded only by newer ones.
+
+| Record | Decision | Status |
+|---|---|---|
+| [ADR-0000](https://github.com/shsingh/agentpcap/blob/main/docs/adr/0000-architecture-decision-records.md) | The ADR process: what carries an ADR, immutability, supersession | accepted |
+| [ADR-0001](https://github.com/shsingh/agentpcap/blob/main/docs/adr/0001-foundational-decisions.md) | Foundational decisions: the read-only invariant, the event contract, Rust and aya | accepted |
+| [ADR-0002](https://github.com/shsingh/agentpcap/blob/main/docs/adr/0002-release-gates.md) | Release gates: three scenarios, each with its measure | accepted |
+
+Most slices are leaf-sized — the issue plus its linked spec sections are
+the design record. Release signing and provenance are
+[normative in the specification](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#171-release-signing-and-provenance)
+(§17.1), not an ADR.
+
+## Supply chain: SLSA provenance and attestation
+
+Every release asset carries **SLSA build provenance**, generated keylessly
+in-job by GitHub Artifact Attestations
+([spec §17.1](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#171-release-signing-and-provenance)):
+Sigstore-signed, bound to this repository's OID issuer, published to the
+public attestation log. The build configuration is Build Level 2
+(ephemeral, source-declared, hosted runners); Build Level 3 arrives when
+the build moves behind an isolated shared reusable workflow, and no
+claim rises above the declared level. The release tag is signed
+(`git tag -s`) and points at the gate pull request's merge commit; the
+release workflow refuses a tag without its committed gate report.
+
+Verify any release binary before running it:
+
+```bash
+gh attestation verify agentpcap-linux-amd64 -R shsingh/agentpcap
+```
+
+The verification contract: the artifact's digest must match a provenance
+record whose repository and workflow identity resolve to
+`shsingh/agentpcap`; anything unsigned or unprovable is not distributed.
+
+## Automated posture
+
+| Control | Status |
+|---|---|
+| Secret scanning + push protection | enabled (repo settings) |
+| Dependency Review on every PR | active (`dependency-review.yml`) |
+| OpenSSF Scorecard | scheduled (`scorecards.yml`) |
+| Spec render (text, HTML, PDF) on source changes | active (`spec-render.yml`); outputs never committed |
+| Site checks on every PR | active (`site-check.yml`) |
+| PR title gate (Conventional Commits) | active (`pr-title-gate.yml`) |
+| Release build + SLSA attestation | on release tags (`release.yml`) |
+| Branch ruleset (signatures, PR-only, checks) | active (`protect-default`) |
+
+## Test receipts
+
+Work moves in red-green pairs and the receipts are the deliverable; the
+[TDD cell matrix](https://github.com/shsingh/agentpcap/blob/main/tests/matrix/LEDGER.md)
+records every cell with its named red and its fresh, VM-run green. A
+green without a run receipt does not count.
+
 ## Licence posture
 
 The project carries the [MIT licence](https://github.com/shsingh/agentpcap/blob/main/LICENSE)
@@ -37,3 +96,16 @@ in the mmark dialect; CI renders it to text, HTML and PDF on every
 source push. The event schema and the ledger format are the interface
 contract; incompatible changes bump `schema_version` and carry a
 migration note.
+
+## Contributor surfaces
+
+- [`AGENTS.md`](https://github.com/shsingh/agentpcap/blob/main/AGENTS.md) —
+  contributors + coding agents (the conventions and the run/execute
+  runbook); rendered on this site under
+  [Agents](https://agentpcap.kalatopi.sh/agents.html).
+- [`CONTRIBUTING.md`](https://github.com/shsingh/agentpcap/blob/main/CONTRIBUTING.md)
+  — the working agreement.
+- [`SECURITY.md`](https://github.com/shsingh/agentpcap/blob/main/SECURITY.md)
+  — vulnerability reporting policy.
+- [`CODE_OF_CONDUCT.md`](https://github.com/shsingh/agentpcap/blob/main/CODE_OF_CONDUCT.md)
+  — community contract.

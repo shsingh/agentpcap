@@ -36,6 +36,8 @@ website:
         text: Contributing
       - href: security.qmd
         text: Security
+      - href: agents.qmd
+        text: Agents
       - icon: github
         href: https://github.com/shsingh/agentpcap
         aria-label: "agentpcap repository"
