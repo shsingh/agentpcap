@@ -15,7 +15,8 @@ fn l003_torn_tail_fails_verification_and_write() {
 
     // simulate a crash mid-append: a partial second line, no newline
     let existing = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, format!("{}{{\"event":"torn\"", existing)).unwrap();
+    let torn = existing + "{\"event\": \"t";
+    std::fs::write(&path, torn).unwrap();
 
     // verification must fail loudly, not silently skip
     assert!(verify_chain(&path).is_err());
