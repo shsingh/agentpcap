@@ -72,18 +72,57 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     eprintln!("c101 receipt: server_pid={server_pid} replies={}", replied.lines().count());
     assert_eq!(replied.lines().count(), 3, "three answers on stdout");
 
-    // the ledger answers
+    // the ledger answers, record by record: the client pid carries the
+    // three framed requests (mcp, ids 1/2/3); the server pid carries
+    // the three replies (ids 1/2/3, the result text intact)
     let text = std::fs::read_to_string(&ledger).unwrap();
-    let mcp: Vec<&str> = text.lines().filter(|l| l.contains(r#""verdict":"mcp""#)).collect();
+    let recs: Vec<serde_json::Value> = text
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+    let own = std::process::id() as u64;
+    let srv = server_pid as u64;
+    let client: Vec<&serde_json::Value> = recs
+        .iter()
+        .filter(|r| r["pid"].as_u64() == Some(own))
+        .collect();
+    let server: Vec<&serde_json::Value> = recs
+        .iter()
+        .filter(|r| r["pid"].as_u64() == Some(srv))
+        .collect();
     eprintln!(
-        "c101 ledger receipt: records={} mcp-records={} methods={:?}",
-        text.lines().count(),
-        mcp.len(),
-        mcp.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).ok()
-            .and_then(|v| v["method"].as_str().map(|s| s.to_string()))).collect::<Vec<_>>()
+        "c101 ledger receipt: records={} client-records={} server-records={} methods={:?}",
+        recs.len(),
+        client.len(),
+        server.len(),
+        client.iter().map(|r| r["method"].as_str()).collect::<Vec<_>>()
     );
-    assert!(mcp.len() >= 3, "the three framed requests classify mcp");
-    assert!(text.contains(r#""method":"initialize""#), "initialize recorded");
-    assert!(text.contains(r#""method":"tools/call""#), "the tools/call recorded");
-    assert!(text.contains("hello-from-read"), "the server's answers recorded");
+    for (meth, id) in [
+        ("initialize", 1),
+        ("tools/list", 2),
+        ("tools/call", 3),
+    ] {
+        assert!(
+            client.iter().any(|r| {
+                r["verdict"] == "mcp"
+                    && r["method"] == meth
+                    && r["payload"]["id"] == id
+            }),
+            "the client's {meth} request with id {id} classified mcp"
+        );
+    }
+    assert_eq!(server.len(), 3, "the server's three replies recorded");
+    for (id, frag) in [
+        (1, "alpha1-server"),
+        (2, "\"tools\""),
+        (3, "hello-from-read"),
+    ] {
+        assert!(
+            server
+                .iter()
+                .any(|r| r["payload"]["id"] == id
+                    && r.to_string().contains(frag)),
+            "the reply with id {id} carries its result"
+        );
+    }
 }

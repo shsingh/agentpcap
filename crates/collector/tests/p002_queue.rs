@@ -38,8 +38,9 @@ fn p002_probe_emits_and_userspace_reads_back() {
 
     // Our own writes drive the probe; the round drains the queue and
     // searches for the marker payload this test writes. Host-wide
-    // writes flood the queue; the drain keeps the search exhaustive.
-    let marker = b"p002-marker";
+    // writes never reach the queue (ADR 0003 filter); the drain keeps
+    // the search exhaustive.
+    let marker = b"\"method\":\"p002-marker\"";
     let now = Instant::now();
     let deadline = now + Duration::from_secs(8);
     let mut found = false;
@@ -50,14 +51,20 @@ fn p002_probe_emits_and_userspace_reads_back() {
             .open(&scratch)
             .unwrap();
         for _ in 0..8 {
-            let _ = writeln!(f, "p002-marker {}", Instant::now().duration_since(now).as_millis());
+            let _ = writeln!(
+                f,
+                "{{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"p002-marker\",\"params\":{{\"t\":{}}}}}",
+                Instant::now().duration_since(now).as_millis()
+            );
         }
         let _ = f.flush();
         for _ in 0..2048 {
             match queue.pop(0) {
                 Ok(s) => {
-                    let n = (s.len as usize).min(32);
-                    if n >= marker.len() && s.first_bytes[..n].starts_with(marker) {
+                    let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
+                    if n >= marker.len()
+                        && s.first_bytes[..n].windows(marker.len()).any(|w| w == *marker)
+                    {
                         found = true;
                         break;
                     }
