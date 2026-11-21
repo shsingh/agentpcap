@@ -70,7 +70,11 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
             ppid: child,
             len: 8,
             pad: [0; 4],
-            first_bytes: *b"forkpair",
+            first_bytes: {
+                let mut b = [0u8; 32];
+                b[..8].copy_from_slice(b"forkpair");
+                b
+            },
         };
         let _ = EVENTS.push(&pair, 0);
         if LINEAGE.insert(&child, &parent, 0).is_ok() {
