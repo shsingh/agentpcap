@@ -37,8 +37,10 @@ fn p000_canary_loads_and_emits_in_vm() {
     std::fs::write(tracing_on, "1").expect("cannot enable tracing (run as root)");
 
     let marker = "canary-agentpcap-p000";
-    let mut trace = std::fs::File::open("/sys/kernel/tracing/trace_pipe")
-        .expect("trace_pipe is not readable; tracing is unavailable");
+    // The snapshot file takes concurrent readers and never blocks;
+    // trace_pipe allows one exclusive reader only.
+    let mut trace = std::fs::File::open("/sys/kernel/tracing/trace")
+        .expect("trace file is not readable; tracing is unavailable");
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut seen = false;
     while Instant::now() < deadline && !seen {
@@ -53,5 +55,5 @@ fn p000_canary_loads_and_emits_in_vm() {
     }
     drop(bpf);
     let _ = std::fs::write(tracing_on, if was_on { "1" } else { "0" });
-    assert!(seen, "no canary marker on trace_pipe within 3 s");
+    assert!(seen, "no canary marker on the trace snapshot within 3 s");
 }
