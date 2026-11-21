@@ -1,10 +1,8 @@
 name: site-check
 on:
   pull_request:
-    paths: ["site/**", ".github/workflows/site-check.yml"]
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/site-check.yml"]
 
 permissions:
   contents: read

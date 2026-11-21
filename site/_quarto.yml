@@ -25,9 +25,13 @@ website:
         text: Intro
       - href: design.qmd
         text: Design
+      - href: roadmap.qmd
+        text: Roadmap
       - href: governance.qmd
         text: Governance
     right:
+      - href: agentpcap-paper.pdf
+        text: Paper
       - href: contributing.qmd
         text: Contributing
       - href: security.qmd
