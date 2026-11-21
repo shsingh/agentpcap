@@ -9,10 +9,25 @@ appends every flow to a lossless, per-host ledger. One static Rust
 binary. No agent-side library, no routing change, no gateway in the
 path.
 
-**Status:** early development, specification-first. The specification
+## Status
+
+Early development, specification-first. The specification
 ([`docs/spec.md`](docs/spec.md)) is in force and renders in CI. The
 reference implementation builds to it in Rust (eBPF via
 [aya](https://github.com/aya-rs/aya)).
+
+## Contents
+
+- [Why agentpcap exists](#why-agentpcap-exists)
+- [How it differs](#how-it-differs)
+- [What it does](#what-it-does)
+- [Quick examples](#quick-examples)
+- [Specification](#specification)
+- [Companion artifacts](#companion-artifacts)
+- [Deployment](#deployment)
+- [Evaluation and roadmap](#evaluation-and-roadmap)
+- [Contributing](#contributing)
+- [Licence](#licence)
 
 ## Why agentpcap exists
 
@@ -38,9 +53,9 @@ append-only ledger built for capability-drift review.
 
 ## How it differs
 
-The project sits beside a large tooling market. Each row names a real
-system, what it covers today, its structural limit, and the answer
-agentpcap gives for that limit.
+The project sits beside established tooling; it does not replace any of
+it. Each row names a real system, what it covers today, its structural
+limit, and the answer agentpcap gives for that limit.
 
 | Solution | What it covers | Structural limit | agentpcap's answer |
 |---|---|---|---|
@@ -114,7 +129,7 @@ renders to text, HTML and PDF artifacts in CI.
 | Deployment | [`docs/spec.md#10-deployment`](docs/spec.md#10-deployment) |
 | Coexistence and deduplication | [`docs/spec.md#11-coexistence-and-flow-deduplication`](docs/spec.md#11-coexistence-and-flow-deduplication) |
 
-Companion artifacts:
+## Companion artifacts
 
 | Artifact | Source |
 |---|---|
