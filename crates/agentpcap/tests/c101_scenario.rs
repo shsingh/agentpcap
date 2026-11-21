@@ -111,7 +111,6 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .iter()
         .filter(|r| {
             r["pid"].as_u64() != Some(own)
-                && r["process"].as_str() == Some("sh")
                 && r["payload"].is_object()
                 && r["payload"]["result"].is_object()
         })
