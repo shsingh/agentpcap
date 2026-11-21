@@ -89,6 +89,22 @@ fn p003_child_write_carries_the_parent_pid() {
         }
     }
 
+    // Fork pair receipts: the last fork pairs the probe pushed.
+    let mut forks_seen: Vec<String> = Vec::new();
+    for _ in 0..512 {
+        match queue.pop(0) {
+            Ok(s) => {
+                let prefix = String::from_utf8_lossy(&s.first_bytes[..(s.len as usize).min(8)])
+                    .to_string();
+                if prefix == "forkpair" {
+                    forks_seen
+                        .push(format!("parent={} child={}", s.pid, s.ppid));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
     // Counter receipts from the probe: invocations and push outcomes.
     let counters: aya::maps::Array<_, u64> = bpf
         .take_map("events")
@@ -139,8 +155,8 @@ fn p003_child_write_carries_the_parent_pid() {
         parent_of_me
     );
     if !found {
-        eprintln!("p003 samples seen ({}):", seen.len());
-        for l in seen.iter().take(40) {
+        eprintln!("p003 fork pairs seen ({}):", forks_seen.len());
+        for l in forks_seen.iter().take(60) {
             eprintln!("  {l}");
         }
     }

@@ -63,6 +63,16 @@ pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
         Err(_) => return 0,
     };
     unsafe {
+        // The fork pair also rides the event queue so the userspace can
+        // ground-truth the offsets: pid carries the parent, ppid the child.
+        let pair = PipeSample {
+            pid: parent,
+            ppid: child,
+            len: 8,
+            pad: [0; 4],
+            first_bytes: *b"forkpair",
+        };
+        let _ = EVENTS.push(&pair, 0);
         if LINEAGE.insert(&child, &parent, 0).is_ok() {
             if let Some(slot) = CANARY.get_ptr_mut(SLOT_INSERT_OK) {
                 *slot += 1;
