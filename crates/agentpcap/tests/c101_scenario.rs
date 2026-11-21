@@ -8,7 +8,6 @@
 // Spec: docs/spec.md#5-collectors, docs/spec.md#13-evaluation-hooks.
 
 use std::io::{BufRead, Write};
-use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -46,22 +45,6 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
-    let reply_fd = server.stdout.as_ref().unwrap().as_raw_fd();
-    // the reply channel's peer key: the inode of this test's read end
-    let reply_peer = std::fs::read_link(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        reply_fd
-    ))
-    .map(|l| {
-        format!(
-            "pipe:{}",
-            l.to_string_lossy()
-                .trim_start_matches("pipe:[")
-                .trim_end_matches(']')
-        )
-    })
-    .expect("the reply pipe's read end resolves to its inode");
     let mut server_out = server.stdout.take().unwrap();
     let mut server_in = server.stdin.take().unwrap();
     // drain the reply pipe concurrently: the responses = the server's
@@ -116,12 +99,15 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
-    // the reply records: tied to the scenario's reply channel — the peer
-    // names the inode of the pipe this test reads, so ambient jsonrpc
-    // from unrelated processes cannot enter the set
+    // the reply records: the reply writer can die inside the tap's pop
+    // window (dash forks even for bare builtins in a loop), so its
+    // records key `peer=unresolved`. The tie to this scenario is the
+    // payload set: the exact ids, the scenario's server name, the exact
+    // tool list and the exact result text. An ambient exchange carries
+    // different payloads and cannot pass the asserts.
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| r["peer"].as_str() == Some(reply_peer.as_str()))
+        .filter(|r| r["payload"]["result"].is_object())
         .collect();
     eprintln!(
         "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",

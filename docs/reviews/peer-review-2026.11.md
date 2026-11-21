@@ -41,7 +41,7 @@ fixed and replied on the review threads before merge.
 |---------|---------|-------------|
 | release page | the required `report` output missing | Fixed: C101 runs `agentpcap report` over the scenario ledger and asserts all six records; the real output rides the release page. |
 | release page | the roadmap still describes alpha1 as unshipped | Fixed: the roadmap's current-phase and alpha1 sections updated; the render receipt noted in the PR. |
-| c101_scenario.rs:96 | the reply filter accepts any non-client process's replies | Fixed in this PR: the reply records are selected by the reply pipe's inode — the test holds the read end of that pipe, so ambient traffic cannot enter the set. |
+| c101_scenario.rs:96 | the ambient-reply fix remains incomplete | Fixed in this PR, with the honest scope: the replies tie to the scenario through the payload set — the exact ids, the scenario's server name, the exact tool list and the exact result text — so an ambient exchange cannot pass. The fd-based channel key works for pipe-resident writers (the client's own writes resolve); forked-builtin reply writers die inside the pop window and key `peer=unresolved` with `fd-unresolved-at-pop` evidence. The in-kernel fd resolution in alpha2 makes every peer channel-keyed. |
 
 ## The release-workflow note
 
