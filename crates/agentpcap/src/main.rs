@@ -236,13 +236,20 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                         // both ends of one channel share the peer and
                         // unrelated channels never collide. Non-pipe
                         // writes (regular files, sockets) are not stdio
-                        // traffic and are not recorded.
-                        let link = std::fs::read_link(format!(
-                            "/proc/{machine_pid}/fd/{}",
-                            s.fd
-                        ))
-                        .map(|l| l.to_string_lossy().to_string())
-                        .unwrap_or_default();
+                        // traffic and are not recorded. Short-lived
+                        // writers may outlive their /proc entry only by
+                        // the pop latency: a bounded retry absorbs that.
+                        let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
+                        let link = (0..5)
+                            .find_map(|attempt| {
+                                if attempt > 0 {
+                                    std::thread::sleep(Duration::from_millis(2));
+                                }
+                                std::fs::read_link(&fd_path)
+                                    .map(|l| l.to_string_lossy().to_string())
+                                    .ok()
+                            })
+                            .unwrap_or_default();
                         let Some(inode) = link
                             .strip_prefix("pipe:[")
                             .and_then(|r| r.strip_suffix(']'))
@@ -288,7 +295,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                     }
                 }
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => std::thread::sleep(Duration::from_millis(2)),
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
