@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::macros::kprobe;
+use aya_ebpf::macros::{kprobe, map};
 use aya_ebpf::maps::HashMap;
 use aya_ebpf::programs::ProbeContext;
 

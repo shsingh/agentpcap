@@ -3,7 +3,6 @@
 // write syscall path, and emits an observable marker.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -48,7 +47,7 @@ fn p000_canary_loads_and_emits_in_vm() {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut seen = 0u64;
     while Instant::now() < deadline {
-        if let Some(v) = events.get(&counter_key, aya::maps::MapFlags::ANY) {
+        if let Some(v) = events.get(&counter_key, 0) {
             seen = *v;
             if seen > 0 {
                 break;
