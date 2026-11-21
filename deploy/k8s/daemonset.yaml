@@ -1,0 +1,94 @@
+# deploy/k8s/daemonset.yaml — the cluster-native placement.
+#
+# Spec: docs/spec.md#10-deployment. The identical binary per node,
+# node-scoped visibility of the node's agent pods, a hostPath for the
+# node ledger. The capability set matches the systemd face exactly and
+# the image carries its own documented set (deploy/k8s/Containerfile).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentpcap
+  labels:
+    app.kubernetes.io/name: agentpcap
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentpcap
+  namespace: agentpcap
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: agentpcap
+  namespace: agentpcap
+  labels:
+    app.kubernetes.io/name: agentpcap
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentpcap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentpcap
+    spec:
+      serviceAccountName: agentpcap
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: tap
+          image: ghcr.io/shsingh/agentpcap:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - tap
+            - --ledger
+            - /var/lib/agentpcap/ledger.jsonl
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            # the capability set: documented in deploy/README.md,
+            # nothing beyond it
+            capabilities:
+              add:
+                - BPF
+                - PERFMON
+                - DAC_READ_SEARCH
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            # the node's /proc face: the tap resolves writer fds
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            # the kernel observer surface: tracefs stays mounted, the
+            # tap never reads tracefs content on this kernel (the
+            # build-vm receipts), the mount keeps the probe's knobs
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            # the node ledger: the hostPath the consumer aggregates
+            - name: ledger
+              mountPath: /var/lib/agentpcap
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              memory: 128Mi
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: ledger
+          hostPath:
+            path: /var/lib/agentpcap
+            type: DirectoryOrCreate

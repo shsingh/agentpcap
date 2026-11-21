@@ -1,0 +1,37 @@
+# agentpcap.service — the host-native placement.
+#
+# Spec: docs/spec.md#10-deployment. The service runs non-root with the
+# ambient capability set the tap needs and nothing more: CAP_BPF and
+# CAP_PERFMON for the eBPF probe loads, CAP_DAC_READ_SEARCH for the
+# /proc reads, and the ledger write access rides the state directory.
+# The unit never writes to any traffic path; the tap is read-only.
+
+[Unit]
+Description=agentpcap - a read-only, protocol-aware tap for agent tool calls
+Documentation=https://github.com/shsingh/agentpcap
+After=network.target
+
+[Service]
+Type=simple
+User=agentpcap
+Group=agentpcap
+# the binary path: the release's install face (the maintainer adjusts
+# the prefix at package time)
+ExecStart=/usr/local/bin/agentpcap tap --ledger /var/lib/agentpcap/ledger.jsonl
+StateDirectory=agentpcap
+# the capability set: documented in deploy/README.md, nothing else
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_DAC_READ_SEARCH
+# the service carries no telemetry of its own
+NoNewPrivileges=on
+ProtectSystem=strict
+ProtectHome=on
+ProtectKernelTunables=on
+ProtectKernelModules=on
+PrivateTmp=on
+ReadWritePaths=-/var/lib/agentpcap
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

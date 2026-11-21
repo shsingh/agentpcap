@@ -31,6 +31,10 @@ pub enum LedgerError {
     Format(usize),
     /// The record carries a foreign `schema_version`.
     SchemaMismatch(usize),
+    /// The record's `dedup` key already rides the ledger: the event
+    /// exists, the append refuses (spec section 11: no doubled events
+    /// for covered flows).
+    Duplicate(usize),
     Io(std::io::Error),
 }
 
@@ -41,6 +45,7 @@ impl fmt::Display for LedgerError {
             LedgerError::ChainBreak(i) => write!(f, "chain break at record {i}"),
             LedgerError::Format(i) => write!(f, "record {i} is not a valid JSON object"),
             LedgerError::SchemaMismatch(i) => write!(f, "record {i} carries a foreign schema_version"),
+            LedgerError::Duplicate(i) => write!(f, "record {i} carries a dedup key that already rides the ledger"),
             LedgerError::Io(e) => write!(f, "io: {e}"),
         }
     }
@@ -110,17 +115,38 @@ pub struct LedgerWriter {
     file: File,
     prev: String,
     count: usize,
+    /// The dedupe keys the ledger already carries: the existing
+    /// segments at open time, then every appended record (spec
+    /// section 11: no doubled events for covered flows).
+    seen_dedup: std::collections::HashSet<String>,
+}
+
+fn dedup_keys(path: &Path) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    if let Ok(data) = fs::read(path) {
+        let text = String::from_utf8_lossy(&data);
+        for line in text.lines() {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(k) = v["dedup"].as_str() {
+                    seen.insert(k.to_string());
+                }
+            }
+        }
+    }
+    seen
 }
 
 impl LedgerWriter {
     /// Open for append. An existing file re-verifies first; a torn or
-    /// broken chain refuses the write.
+    /// broken chain refuses the write. The dedupe set loads from the
+    /// existing segments.
     pub fn create(path: &Path) -> Result<LedgerWriter, LedgerError> {
-        let (_, prev) = if path.exists() {
+        let (count, prev) = if path.exists() {
             check(path)?
         } else {
             (0, String::new())
         };
+        let seen_dedup = dedup_keys(path);
         let file = OpenOptions::new()
             .append(true)
             .create(true)
@@ -129,12 +155,16 @@ impl LedgerWriter {
             path: path.to_path_buf(),
             file,
             prev,
-            count: 0,
+            count,
+            seen_dedup,
         })
     }
 
     /// Append one record. Injects the chain field `prev`; injects
-    /// `schema_version` when the record does not carry it.
+    /// `schema_version` when the record does not carry it. A record
+    /// whose `dedup` key already rides the ledger refuses: the
+    /// coexistence dedupe (spec section 11), and the ledger's own
+    /// count does not move.
     pub fn append(&mut self, record: &Value) -> Result<usize, LedgerError> {
         let mut line = record.clone();
         let obj = line
@@ -145,6 +175,13 @@ impl LedgerWriter {
                 return Err(LedgerError::SchemaMismatch(self.count));
             }
         }
+        if let Some(k) = obj.get("dedup").and_then(|v| v.as_str()).map(str::to_string) {
+            if self.seen_dedup.contains(&k) {
+                return Err(LedgerError::Duplicate(self.count));
+            }
+        }
+        // the key ride for the seen-set insert at the append's tail
+        let dedup_key = obj.get("dedup").and_then(|v| v.as_str()).map(str::to_string);
         obj.insert("prev".into(), Value::String(self.prev.clone()));
         obj.entry("schema_version")
             .or_insert_with(|| Value::String(SCHEMA_VERSION.into()));
@@ -154,6 +191,9 @@ impl LedgerWriter {
         self.file.flush()?;
         self.prev = trunc(&body);
         self.count += 1;
+        if let Some(k) = dedup_key {
+            self.seen_dedup.insert(k);
+        }
         Ok(self.count)
     }
 

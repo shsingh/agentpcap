@@ -1,0 +1,8 @@
+# The cluster image: the identical binary per node, built from the
+# release's artifacts (the release workflow's attested assets are the
+# build inputs). The capability set is documented in deploy/README.md.
+FROM scratch
+# the maintainer copies the attested release binary at build time
+COPY agentpcap /usr/local/bin/agentpcap
+USER 65534
+ENTRYPOINT ["/usr/local/bin/agentpcap"]

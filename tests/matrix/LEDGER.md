@@ -69,7 +69,21 @@ it belongs to its base case.
 | C002 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report --ledger P` prints the records; the read lands in the access log as `actor = agentpcap.report` | GREEN on `feat/2026.01-alpha1` |
 | C003 | [§9 Operator CLI](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#9-operator-cli) | `report` on a torn ledger: nonzero exit, no records on stdout, the failure states itself on stderr | GREEN on `feat/2026.01-alpha1` |
 | C101 | [§13 Evaluation hooks](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#13-evaluation-hooks) | the alpha1 scenario (ADR-0002): the test plays an MCP client, the frames ride the server's stdin pipe, the server answers on a piped stdout, the tap runs throughout — the client records carry all three requests classified `mcp` (payload ids 1/2/3), the reply records carry the three results, and `report` prints all six | GREEN on `fix/greptile-audit`; receipt: records=6 client-records=3 server-records=3 methods=[initialize, tools/list, tools/call], report lines=6, three consecutive green runs |
-| C100 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the tap: probe loop, pid-space calibration, pipe-fd identity, classifier and ledger in one run — a real MCP frame lands `verdict=mcp`, a methodless result lands `agent-unidentified`, both on one channel-keyed pipe | GREEN on `fix/greptile-audit`; receipt: `test result: ok. 1 passed`, ledger receipt (3): the mcp frame and the methodless result recorded |
+| C100 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the tap: probe loop, pid-space calibration, pipe-fd identity, classifier and ledger in one run — a real MCP frame lands `verdict=mcp`, a methodless result lands `agent-unidentified`, both on one channel-keyed pipe | GREEN on `feat/2026.01-alpha1`; receipt: `test result: ok. 1 passed`, ledger receipt (3): the mcp frame and the methodless result recorded |
+| C008 | [§11 Coexistence and flow deduplication](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#11-coexistence-and-flow-deduplication) | the export stream ingests through `record` with the `--source export` stamp; a doubled event skips with the dedupe key and the face continues; the ingested records name their capture path; the chain stays intact | GREEN on `feat/deploy-coexistence` `94648c6`; receipt: records=2 of the 3 fed, the dedupe skip states itself on stderr, `verify_chain` rc=0 |
+| L105 | [§11 Coexistence and flow deduplication](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#11-coexistence-and-flow-deduplication) | the writer refuses a record whose `dedup` key already rides the ledger; the chain verifies after the refusal and the count does not move for it | GREEN on `feat/deploy-coexistence` `94648c6`, 1 passed |
+
+## The deployment faces (issue #21, #22)
+
+`deploy/systemd/agentpcap.service`, `deploy/launchd/dev.agentpcap.plist`,
+`deploy/k8s/daemonset.yaml` and `deploy/k8s/Containerfile` join the
+build. The capability set is exactly `CAP_BPF`, `CAP_PERFMON`,
+`CAP_DAC_READ_SEARCH` on the systemd face and `BPF`, `PERFMON`,
+`DAC_READ_SEARCH` on the DaemonSet face, documented in
+[deploy/README.md](https://github.com/shsingh/agentpcap/blob/main/deploy/README.md);
+the ledger write access rides the state directory (the systemd
+`StateDirectory`) and the DaemonSet hostPath. The launchd face serves
+the review subcommands and runs no capture.
 
 ## Green gate rule
 

@@ -21,12 +21,30 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+
+/// The flag walker: `--flag <value>` pairs and standalone `--flag`
+/// switches. Misuse is the caller's exit-2 face.
+fn flag(args: &[String], name: &str, takes_value: bool) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == name {
+            if takes_value {
+                return it.next().cloned();
+            }
+            return Some(String::new());
+        }
+    }
+    None
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match (args.first().map(String::as_str), args.get(2)) {
-        (Some("record"), Some(path)) => record(PathBuf::from(path)),
+        (Some("record"), Some(path)) => record(
+            PathBuf::from(path),
+            flag(&args[1..], "--source", true),
+        ),
         (Some("report"), Some(path)) => report(PathBuf::from(path)),
         (Some("tap"), Some(path)) => tap(
             PathBuf::from(path),
@@ -43,7 +61,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn record(path: PathBuf) -> ExitCode {
+fn record(path: PathBuf, source: Option<String>) -> ExitCode {
     let mut writer = match LedgerWriter::create(&path) {
         Ok(w) => w,
         Err(e) => {
@@ -64,18 +82,34 @@ fn record(path: PathBuf) -> ExitCode {
         if line.trim().is_empty() {
             continue;
         }
-        let event = match serde_json::from_str(&line) {
+        let mut event =
+            match serde_json::from_str::<serde_json::Value>(&line) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("agentpcap record: event {n} is not valid JSON: {e}");
                 return ExitCode::FAILURE;
             }
         };
-        if let Err(e) = writer.append(&event) {
-            eprintln!("agentpcap record: {e}");
-            return ExitCode::FAILURE;
+        // the coexistence stamp: the ingest face names the capture path
+        // the record entered through (spec section 11)
+        if let Some(s) = &source {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("source".into(), Value::String(s.clone()));
+            }
         }
-        count += 1;
+        match writer.append(&event) {
+            Ok(_) => count += 1,
+            Err(agentpcap_ledger::LedgerError::Duplicate(_)) => {
+                // the coexistence dedupe: the covered flow exists, the
+                // face continues and states the skip
+                eprintln!("agentpcap record: the dedupe skipped event {n}: the event's dedup key already rides the ledger");
+                continue;
+            }
+            Err(e) => {
+                eprintln!("agentpcap record: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
     eprintln!("agentpcap record: {count} record(s) -> {}", path.display());
     ExitCode::SUCCESS
