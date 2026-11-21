@@ -45,6 +45,8 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .expect("server spawn");
     let server_pid = server.id();
     let mut server_in = server.stdin.take().unwrap();
+    // wait out the tap's calibration: the ledger writer only exists after it
+    std::thread::sleep(Duration::from_millis(1200));
 
     // this test is the MCP client: write the three framed requests
     let frames = [
