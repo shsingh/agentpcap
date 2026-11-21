@@ -47,8 +47,8 @@ fn p000_canary_loads_and_emits_in_vm() {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut seen = 0u64;
     while Instant::now() < deadline {
-        if let Some(v) = events.get(&counter_key, 0) {
-            seen = *v;
+        if let Ok(v) = events.get(&counter_key, 0) {
+            seen = v;
             if seen > 0 {
                 break;
             }
