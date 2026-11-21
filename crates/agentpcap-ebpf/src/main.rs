@@ -38,13 +38,13 @@ const SLOT_PUSH_FAIL: u32 = 3;
 
 #[tracepoint]
 pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
-    // sys_enter_write layout on this kernel (format-verified): fd, buf,
-    // count at 0, 8, 16 bytes.
-    let buf: usize = match unsafe { ctx.read_at::<usize>(8) } {
+    // sys_enter_write tracepoint context (format-verified on this
+    // kernel): fd at 16, buf at 24, count at 32 bytes.
+    let buf: usize = match unsafe { ctx.read_at::<usize>(24) } {
         Ok(v) => v,
         Err(_) => return 0,
     };
-    let count: usize = match unsafe { ctx.read_at::<usize>(16) } {
+    let count: usize = match unsafe { ctx.read_at::<usize>(32) } {
         Ok(v) => v,
         Err(_) => return 0,
     };
