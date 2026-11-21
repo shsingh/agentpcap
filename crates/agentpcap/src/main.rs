@@ -241,50 +241,44 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             std::fs::read_to_string(format!("/proc/{machine_pid}/comm"))
                                 .map(|c| c.trim().to_string())
                                 .unwrap_or_else(|_| "unknown".to_string());
-                        // pipe identity: the write's fd must name a pipe;
+                        // Pipe identity: the write's fd must name a pipe;
                         // the pipe inode is the channel's pair key, so
                         // both ends of one channel share the peer and
-                        // unrelated channels never collide. Non-pipe
-                        // writes (regular files, sockets) are not stdio
-                        // traffic and are not recorded. Short-lived
-                        // writers may outlive their /proc entry only by
-                        // the pop latency: a bounded retry absorbs that.
+                        // unrelated channels never collide. Three
+                        // outcomes: a resolvable fd that names pipe[:]
+                        // records the channel; a resolvable fd that names
+                        // anything else is live process traffic to a file
+                        // or socket and never records; a failed lookup
+                        // means the writer's /proc entry is gone (it died
+                        // inside the pop window) and the record lands
+                        // keyed honestly as unresolved, with the
+                        // fd-unresolved-at-pop evidence.
                         let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
-                        // two failure meanings are kept apart: a failed
-                        // lookup means the writer's /proc entry is gone
-                        // (it died inside the pop window); a resolvable
-                        // fd naming a non-pipe is live process traffic
-                        // to a file or socket and never records.
-                        let looked = (0..5)
-                            .filter_map(|attempt| {
-                                if attempt > 0 {
-                                    std::thread::sleep(Duration::from_millis(2));
-                                }
-                                std::fs::read_link(&fd_path)
-                                    .ok()
-                                    .filter(|l| {
-                                        l.starts_with("pipe:[")
-                                    })
-                            })
-                            .next();
-                        let peer = match &looked {
-                            Some(l) => {
-                                let inode = l
-                                    .to_string_lossy()
-                                    .trim_start_matches("pipe:[")
-                                    .trim_end_matches(']')
-                                    .to_string();
-                                format!("pipe:{inode}")
+                        let peer = (0..5).find_map(|attempt| {
+                            if attempt > 0 {
+                                std::thread::sleep(Duration::from_millis(2));
                             }
-                            None => {
-                                // the /proc entry is gone: the writer
-                                // died after its write. The record lands
-                                // keyed honestly, and the alpha2
-                                // in-kernel fd resolution replaces this.
-                                "unresolved".to_string()
+                            match std::fs::read_link(&fd_path) {
+                                // the entry is gone: retry
+                                Err(_) => None,
+                                Ok(p) => Some(p),
                             }
-                        };
-                        let died_unresolved = looked.is_none();
+                        })
+                        .map(|l| {
+                            // the fd resolved at least once: final answer
+                            let text = l.to_string_lossy().to_string();
+                            match text
+                                .strip_suffix(']')
+                                .and_then(|rest| rest.strip_prefix("pipe:["))
+                            {
+                                Some(inode) => format!("pipe:{inode}"),
+                                // a live non-pipe fd: not stdio traffic
+                                _ => String::from("skipped"),
+                            }
+                        })
+                        .and_then(|peer| if peer == "skipped" { None } else { Some(peer) });
+                        let died_unresolved = peer.is_none();
+                        let peer = peer.unwrap_or_else(|| "unresolved".to_string());
                         let ppid =
                             resolve_parent(machine_pid, &mut cache, Duration::from_secs(2));
                         let mut evidence = vec!["stdio-pipe".to_string()];
