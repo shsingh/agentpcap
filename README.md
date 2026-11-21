@@ -114,6 +114,14 @@ renders to text, HTML and PDF artifacts in CI.
 | Deployment | [`docs/spec.md#10-deployment`](docs/spec.md#10-deployment) |
 | Coexistence and deduplication | [`docs/spec.md#11-coexistence-and-flow-deduplication`](docs/spec.md#11-coexistence-and-flow-deduplication) |
 
+Companion artifacts:
+
+| Artifact | Source |
+|---|---|
+| Research note (the survey behind the design) | [`docs/agentpcap-paper.md`](docs/agentpcap-paper.md) — rendered PDF on [the site](https://agentpcap.kalatopi.sh/) |
+| Source ledger (every citation, grouped) | [`docs/references.md`](docs/references.md) |
+| Foundational decisions | [`docs/adr/0001-foundational-decisions.md`](docs/adr/0001-foundational-decisions.md) — index at [`docs/adr/0000-architecture-decision-records.md`](docs/adr/0000-architecture-decision-records.md) |
+
 ## Deployment
 
 Two placement modes, one binary, one event schema; capture is
@@ -146,6 +154,9 @@ export surfaces. Current phase: evaluation fleet build.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting
   ([private advisory](https://github.com/shsingh/agentpcap/security/advisories/new)).
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+- Architecture decisions live in [`docs/adr/`](docs/adr/0000-architecture-decision-records.md);
+  ADR-0001 records the read-only invariant, the opaque default, the
+  Rust choice and the licence posture.
 
 **Engineering standard — harness before capability:** every behavioural
 change goes in as a RED→GREEN pair. The failing test exists and runs
