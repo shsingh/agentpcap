@@ -7,3 +7,6 @@ license.workspace = true
 
 [lib]
 name = "agentpcap_collector"
+
+[dev-dependencies]
+aya = "0.13"

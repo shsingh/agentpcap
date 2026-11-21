@@ -1,0 +1,17 @@
+[package]
+name = "agentpcap-ebpf"
+description = "agentpcap eBPF objects, compiled for bpfel-unknown-none"
+version = "0.0.1-alpha1"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "agentpcap"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.3"
+
+# The bpf crate builds for bpfel-unknown-none only; it stays a
+# standalone workspace so the host never compiles it.
+[workspace]
