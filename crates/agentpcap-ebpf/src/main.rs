@@ -5,9 +5,10 @@
 #![no_main]
 
 use aya_ebpf::programs::ProbeContext;
-use aya_ebpf::{bpf_printk, macros::kprobe};
+use aya_ebpf::macros::kprobe;
+use aya_ebpf::bpf_printk;
 
-#[kprobe(name = "agentpcap")]
+#[kprobe]
 pub fn agentpcap(_ctx: ProbeContext) -> i64 {
     bpf_printk!("canary-agentpcap-p000");
     0
