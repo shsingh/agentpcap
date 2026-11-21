@@ -29,9 +29,9 @@ website:
         text: Roadmap
       - href: governance.qmd
         text: Governance
-    right:
       - href: agentpcap-paper.pdf
         text: Paper
+    right:
       - href: contributing.qmd
         text: Contributing
       - href: security.qmd
