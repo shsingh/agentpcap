@@ -40,6 +40,10 @@ pub struct PipeSample {
     pub first_bytes: [u8; 32],
 }
 
+// SAFETY: the struct is POD (fixed size, no padding-sensitive fields in
+// use) and the wire layout is const-locked; aya reads it by value.
+unsafe impl aya::Pod for PipeSample {}
+
 pub const PAYLOAD_BYTES_CAP: usize = 32;
 
 const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);

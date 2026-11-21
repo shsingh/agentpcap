@@ -13,3 +13,4 @@ serde_json = "1"
 
 [dev-dependencies]
 aya = "0.13"
+tempfile = "3"
