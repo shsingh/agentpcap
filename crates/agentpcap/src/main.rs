@@ -267,7 +267,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                                     })
                             })
                             .next();
-                        let peer = match looked {
+                        let peer = match &looked {
                             Some(l) => {
                                 let inode = l
                                     .to_string_lossy()
