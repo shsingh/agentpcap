@@ -36,7 +36,7 @@ pub struct PipeSample {
     /// Payload bytes carried in `first_bytes`.
     pub len: u32,
     /// The writer's file descriptor (the write syscall's first argument).
-    fd: u32,
+    pub fd: u32,
     /// The first payload bytes of the write buffer.
     pub first_bytes: [u8; 256],
 }
