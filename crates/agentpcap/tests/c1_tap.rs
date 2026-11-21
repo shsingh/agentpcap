@@ -55,6 +55,9 @@ fn c100_tap_ledgers_the_classified_flow() {
     drop(f);
     let _ = sink.wait().expect("sink exits");
 
+    let st = tap.wait().expect("tap exits");
+    assert!(st.success(), "tap must exit cleanly");
+
     // the report answers
     let out = bin()
         .args(["report", "--ledger"])
