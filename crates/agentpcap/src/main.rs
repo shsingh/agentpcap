@@ -309,13 +309,14 @@ fn event_name_for(method: Option<&str>) -> &'static str {
 }
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).
+/// /dev/urandom never ends, so the request is a bounded exact read.
 fn random_token() -> String {
-    std::fs::read("/dev/urandom")
-        .map(|b| {
-            b.iter()
-                .take(8)
-                .map(|x| format!("{x:02x}"))
-                .collect::<String>()
-        })
-        .unwrap_or_else(|_| format!("{:x}", std::process::id()))
+    use std::io::Read;
+    let mut b = [0u8; 8];
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .ok();
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
