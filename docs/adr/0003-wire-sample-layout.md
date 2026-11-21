@@ -1,6 +1,6 @@
 # 0003 — Wire sample layout and capture filter
 
-Status: accepted
+Status: accepted, superseded in part by [0004](0004-wire-sample-layout-v2.md)
 
 ## Context
 

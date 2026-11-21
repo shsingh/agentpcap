@@ -19,7 +19,7 @@ pub struct PipeSample {
     pid: u32,
     ppid: u32,
     len: u32,
-    pad: [u8; 4],
+    fd: u32,
     first_bytes: [u8; 256],
 }
 
@@ -118,7 +118,10 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
             pid: (bpf_get_current_pid_tgid() >> 32) as u32,
             ppid: 0,
             len: take as u32,
-            pad: [0; 4],
+            fd: match ctx.read_at::<u32>(16) {
+                Ok(v) => v,
+                Err(_) => return 0,
+            },
             first_bytes: [0u8; 256],
         };
         if take > 0 {
