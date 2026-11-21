@@ -260,7 +260,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             }
                             match std::fs::read_link(&fd_path) {
                                 // the entry is gone: retry
-                                Err(_) => None,
+                                Err(e) => {
+                                    eprintln!(
+                                        "agentpcap tap: attempt {attempt}: fd_path={fd_path} err={e}"
+                                    );
+                                    None
+                                }
                                 Ok(p) => Some(p),
                             }
                         })
