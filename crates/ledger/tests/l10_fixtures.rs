@@ -3,12 +3,18 @@
 // chain-ok, chain-broken, torn-tail, schema-mismatch.
 // Spec: docs/spec.md#7-the-flow-ledger. Cell ledger: tests/matrix/LEDGER.md.
 
-use std::path::Path;
+use agentpcap_ledger::conformance;
+use std::path::PathBuf;
 
 #[test]
 fn l10_fixtures_answer_their_expectations() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ledger");
-    let results = agentpcap_ledger::conformance::run(&dir).expect("fixture walk");
+    let dir = std::env::var("AGENTPCAP_FIXTURE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ledger")
+        });
+    eprintln!("fixture dir: {}", dir.display());
+    let results = conformance::run(&dir).expect("fixture walk");
     assert_eq!(
         results.len(),
         5,
