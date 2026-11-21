@@ -65,6 +65,7 @@ fn p003_child_write_carries_the_parent_pid() {
     let mut found = false;
     let mut our_fork_pair: Option<String> = None;
     let mut popped = 0u64;
+    let mut forks_log: Vec<String> = Vec::new();
     while Instant::now() < deadline && !found {
         for _ in 0..2048 {
             match queue.pop(0) {
@@ -81,8 +82,14 @@ fn p003_child_write_carries_the_parent_pid() {
                             break;
                         }
                     }
-                    if s.first_bytes.starts_with(b"forkpair") && s.pid == me {
-                        our_fork_pair = Some(format!("parent={} child={}", s.pid, s.ppid));
+                    if s.first_bytes.starts_with(b"forkpair") {
+                        let pair = format!("parent={} child={}", s.pid, s.ppid);
+                        if forks_log.len() < 40 {
+                            forks_log.push(pair.clone());
+                        }
+                        if s.pid == me {
+                            our_fork_pair = Some(pair);
+                        }
                     }
                 }
                 Err(_) => break,
@@ -166,8 +173,8 @@ fn p003_child_write_carries_the_parent_pid() {
         "p003 lineage map inverse: me {me} -> {:?}",
         parent_of_me
     );
-    for l in forks_seen.iter().take(40) {
-        eprintln!("  forkpair {l}");
+    for l in forks_log.iter().take(40) {
+        eprintln!("  during-drain forkpair {l}");
     }
     for l in raw_dumps.iter().take(12) {
         eprintln!("  rawdump {l}");
