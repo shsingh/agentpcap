@@ -62,6 +62,14 @@ Fixture cases (`crates/ledger/tests/fixtures/ledger/`): `01-genesis`,
 `05-schema-mismatch`. A continuation segment carries no own `.expect`;
 it belongs to its base case.
 
+## CLI crate — `agentpcap` (issue #13)
+
+| Cell | Spec anchor | Assertion | Status |
+|------|-------------|-----------|--------|
+| C001 | `docs/spec.md#9-operator-cli` | `record --ledger P` appends JSON Lines from stdin; exit 0; two chained records verified | GREEN on `feat/2026.01-alpha1` |
+| C002 | `docs/spec.md#9-operator-cli` | `report --ledger P` prints the records; the read lands in the access log as `actor = agentpcap.report` | GREEN on `feat/2026.01-alpha1` |
+| C003 | `docs/spec.md#9-operator-cli` | `report` on a torn ledger: nonzero exit, no records on stdout, the failure states itself on stderr | GREEN on `feat/2026.01-alpha1` |
+
 ## Green gate rule
 
 A cell moves to green only on a fresh run in the build VM. The run

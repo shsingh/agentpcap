@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "agentpcap"
-path = "src/main.rs"
+[dependencies]
+agentpcap-ledger = { path = "../ledger" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
