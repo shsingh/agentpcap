@@ -37,12 +37,12 @@
       "automerge": false
     },
     {
-      "matchPackagePatterns": [
-        "^aya$",
-        "^sha2$",
-        "^ubuntu$"
-      ],
-      "recreateClosed": false
+      "recreateWhen": "auto",
+      "matchPackageNames": [
+        "/^aya$/",
+        "/^sha2$/",
+        "/^ubuntu$/"
+      ]
     }
   ],
   "dependencyDashboard": {
