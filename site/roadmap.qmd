@@ -1,0 +1,66 @@
+---
+title: Roadmap
+---
+
+The build-out runs in three gates. One gate = one named milestone: it ships
+when its scenarios pass and their evidence posts ([ADR-0002](https://github.com/shsingh/agentpcap/blob/main/docs/adr/0002-release-gates.md)).
+The live board carries the same set of cards:
+[agentpcap — Roadmap & Build Board](https://github.com/users/shsingh/projects/7).
+
+## Current phase
+
+AG-0.1 build-out. The specification is in force and renders in CI; the
+implementation starts with the workspace skeleton and the stdio class.
+
+## Release gates
+
+| Gate | Scenario | Measures |
+|---|---|---|
+| AG-0.1 | one lab host, one stdio MCP client and server | ledger chain verifies after rotation; no path writes; zero arguments stored |
+| AG-0.2 | the fleet plus remote Streamable HTTP and one attributed-mode host | M3 coverage matrix; M4 capability drift |
+| AG-1.0 | full fleet with seeded shadow deployments | M1 recall, M2 overhead delta, M3 full matrix, M4 fidelity, M5 triage precision, M6 handoff latency — gate rule: M1 passing with M3 at M2 cost |
+
+## AG-0.1 — MVP: the stdio class, end to end
+
+| Issue | Title | Labels |
+|---|---|---|
+| [#10](https://github.com/shsingh/agentpcap/issues/10) | feat: cargo workspace and dependency skeleton | build,mvp |
+| [#11](https://github.com/shsingh/agentpcap/issues/11) | feat(tap): pipe collector frames stdio JSON-RPC in both directions | tap,mvp |
+| [#12](https://github.com/shsingh/agentpcap/issues/12) | feat(ledger): append-only JSONL writer with prev-hash chain and rotation | ledger,mvp |
+| [#13](https://github.com/shsingh/agentpcap/issues/13) | feat(cli): record and report subcommands | cli,mvp |
+| [#14](https://github.com/shsingh/agentpcap/issues/14) | test(ledger): conformance fixtures for chain, rotation, tamper, access log | ledger,mvp,test |
+| [#31](https://github.com/shsingh/agentpcap/issues/31) | release: AG-0.1 gate | mvp,release-gate |
+
+## AG-0.2 — The wire class and both modes
+
+| Issue | Title | Labels |
+|---|---|---|
+| [#15](https://github.com/shsingh/agentpcap/issues/15) | feat(tap): eBPF socket collector with cgroup and lineage filters | tap |
+| [#16](https://github.com/shsingh/agentpcap/issues/16) | feat(tap): TLS-boundary uprobe collector for attributed mode | tap |
+| [#17](https://github.com/shsingh/agentpcap/issues/17) | feat(reassemble): MCP session reassembly — init, tools-list, tools-call, notify | reassemble |
+| [#18](https://github.com/shsingh/agentpcap/issues/18) | feat(classify): unidentified-flow events with evidence features | classify |
+| [#19](https://github.com/shsingh/agentpcap/issues/19) | feat(cli): diff subcommand for capability drift | cli |
+| [#20](https://github.com/shsingh/agentpcap/issues/20) | feat(cli): export subcommand for the gate stream | cli |
+| [#21](https://github.com/shsingh/agentpcap/issues/21) | feat(deploy): systemd unit, launchd template, bounded capability set | deploy |
+| [#22](https://github.com/shsingh/agentpcap/issues/22) | feat(deploy): per-node DaemonSet manifest with node-scope ledger | deploy |
+| [#23](https://github.com/shsingh/agentpcap/issues/23) | feat: coexistence export consumption with the dedupe key | ledger |
+
+## AG-1.0 — The evaluation gate
+
+| Issue | Title | Labels |
+|---|---|---|
+| [#24](https://github.com/shsingh/agentpcap/issues/24) | feat(eval): Python harness scaffold over the CLI and export surfaces | eval |
+| [#25](https://github.com/shsingh/agentpcap/issues/25) | perf(eval): M2 tap overhead — tap-on versus tap-off delta against the sub-3% figure | eval,performance |
+| [#26](https://github.com/shsingh/agentpcap/issues/26) | perf(eval): M1 shadow-discovery recall on the fixture fleet | eval,performance,release-gate |
+| [#27](https://github.com/shsingh/agentpcap/issues/27) | perf(eval): M3 transport-coverage matrix run | eval,release-gate |
+| [#28](https://github.com/shsingh/agentpcap/issues/28) | perf(eval): M4 ledger fidelity on capability drift | eval,performance |
+| [#29](https://github.com/shsingh/agentpcap/issues/29) | perf(eval): M5 unidentified-flow triage precision | eval,performance |
+| [#30](https://github.com/shsingh/agentpcap/issues/30) | perf(eval): M6 gate handoff latency against the 2-second budget | eval,performance |
+| [#32](https://github.com/shsingh/agentpcap/issues/32) | release: AG-1.0 gate | release-gate |
+
+## The measurement set
+
+The six measurements map to the evaluation issues above: M1 → #26,
+M2 → #25, M3 → #27, M4 → #28, M5 → #29, M6 → #30. Baselines come
+from the published figures of the
+[research note](https://github.com/shsingh/agentpcap/blob/main/docs/agentpcap-paper.md).
