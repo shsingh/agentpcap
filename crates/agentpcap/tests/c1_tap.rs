@@ -26,7 +26,6 @@ fn c100_tap_ledgers_the_classified_flow() {
         .arg("--duration")
         .arg("3")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()
         .expect("agentpcap binary");
     std::thread::sleep(Duration::from_millis(1200));
