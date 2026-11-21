@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 #[test]
 fn p000_canary_loads_and_emits_in_vm() {
     let ws = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let obj = ws.join("target/bpfel-unknown-none/release/agentpcap");
+    let obj = ws.join("crates/agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap");
     assert!(
         obj.is_file(),
         "P000 red: the compiled bpf object is absent at {}",
