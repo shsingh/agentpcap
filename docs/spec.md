@@ -195,7 +195,7 @@ The ledger's event stream is the input surface for a criteria gate. A policy pas
 
 ## 13. Evaluation hooks
 
-The evaluation plan defines six measurements: shadow-discovery recall, overhead, transport coverage, ledger fidelity, unidentified-flow triage, and gate handoff latency. The binary SHOULD expose counters that let the Python evaluation harness measure M1 through M6 without instrumenting the tap internals; the harness lives in the repository's `eval/` directory and consumes only the CLI and export surfaces. Harness overhead MUST be kept out of the tap's measurement path; M2 measures tap-on versus tap-off deltas with the identical harness.
+The evaluation plan defines six measurements: shadow-discovery recall, overhead, transport coverage, ledger fidelity, unidentified-flow triage, and gate handoff latency. The binary SHOULD expose counters that let the Python evaluation harness measure M001 through M006 without instrumenting the tap internals; the harness lives in the repository's `eval/` directory and consumes only the CLI and export surfaces. Harness overhead MUST be kept out of the tap's measurement path; M002 measures tap-on versus tap-off deltas with the identical harness.
 
 ## 14. Privacy and data minimization
 

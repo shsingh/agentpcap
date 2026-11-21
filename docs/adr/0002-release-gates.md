@@ -8,7 +8,7 @@ The project releases in slices. Each merge must land with evidence, and
 each named release carries one gate the evaluation fleet measures.
 Without a written gate, a release is a date; with one, it is a set of
 scenarios with numbers. The companion research note defines six
-measurements (M1 to M6); this record binds them to release gates.
+measurements (M001 to M006); this record binds them to release gates.
 
 ## Decision
 
@@ -22,7 +22,7 @@ appends; `report` answers "who called what with which capabilities".
 
 - Coverage: the pipe class, opaque mode, one event schema, four CLI
   subcommands' `record` and `report` paths.
-- Measures: ledger chain verifies after rotation (M4 partial); no path
+- Measures: ledger chain verifies after rotation (M004 partial); no path
   writes (the read-only invariant test); zero arguments stored.
 - Evidence: the ledger excerpt, the report output, the conformance
   fixtures, posted in the release.
@@ -36,8 +36,8 @@ with TLS, and one attributed-mode host.
   reassembly, unidentified-flow events, `diff` and `export`, the
   systemd unit and the DaemonSet manifest.
 - Measures: transport-coverage matrix over stdio, Streamable HTTP,
-  legacy SSE and A2A (M3 run); capability-drift detection before and
-  after a tool-set change (M4 full).
+  legacy SSE and A2A (M003 run); capability-drift detection before and
+  after a tool-set change (M004 full).
 - Evidence: the coverage matrix, the drift diff, the deployment
   manifests, in the release.
 
@@ -48,13 +48,13 @@ against the published baselines of the survey.
 
 - Coverage: everything above, plus the unidentified-flow pass and the
   criteria-gate handoff.
-- Measures: all six — M1 shadow-discovery recall against the
-  header-heuristic class and active probing; M2 tap overhead, tap-on
+- Measures: all six — M001 shadow-discovery recall against the
+  header-heuristic class and active probing; M002 tap overhead, tap-on
   versus tap-off delta with the identical harness, against the sub-3%
-  published figure; M3 the coverage matrix at full pass; M4 ledger
-  fidelity on capability drift; M5 unidentified-triage precision; M6
+  published figure; M003 the coverage matrix at full pass; M004 ledger
+  fidelity on capability drift; M005 unidentified-triage precision; M006
   gate-handoff latency against the 2-second criteria budget.
-- Gate rule: M1 passing with M3's full matrix, at M2's cost, is the
+- Gate rule: M001 passing with M003's full matrix, at M002's cost, is the
   result that decides the project's public claims.
 
 ## Consequences

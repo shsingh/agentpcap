@@ -3,7 +3,7 @@
 <div class="titleblock">
 <p class="authorline"><strong>Shaineel Singh</strong> (email: shain.singh@owasp.org)</p>
 <p class="affilline">agentpcap research note · agent security research · Melbourne</p>
-<p class="revsline">Revision 0.4 — 21 November 2026 · github.com/shsingh/agentpcap</p>
+<p class="revsline">Revision 0.5 — 21 November 2026 · github.com/shsingh/agentpcap</p>
 </div>
 
 <p class="abstractpara"><strong>Abstract.</strong> Agent fleets reach their tools through the Model Context Protocol (MCP), and each tool call is a network event carried as encrypted traffic to endpoints the change process did not ticket. We survey the tooling an operator can use to see this traffic, across four classes: in-path gateways, secure web gateways with protocol detection, endpoint and eBPF capture, and inventory scanning. Each class resolves part of the problem and leaves a structural residue: routed-only coverage, mandatory TLS decryption, per-host agent scoping, missing MCP session semantics, and no append-only record of tool flows. We state the residue as a six-item gap set and sketch agentpcap, a read-only instrument that taps agents at socket and pipe boundaries, reassembles MCP and agent-to-agent sessions, and appends every flow to a lossless, per-host ledger designed for capability-drift review, with a criteria gate on the event stream as its policy surface. The instrument ships as one self-contained static binary with two placement modes — a host-native daemon and a per-node Kubernetes DaemonSet — and borrows upstream capture libraries at build time, so comprehensive coverage is one install that complements, rather than requires, the gateway and endpoint systems already deployed. An evaluation plan defines the six measurements that decide whether the build is justified. The argument concludes for re-use of the proven capture mechanics and a deliberately narrow build: the flow ledger and the unidentified-flow pass.</p>
@@ -124,14 +124,14 @@ In host-native mode, the same binary runs as a service under the host's init (sy
 
 The evaluation plan doubles as the measurement plan for an operator-facing conference presentation; it is deliberately built on numbers the existing literature already publishes as comparisons.
 
-- **M1 — Shadow discovery.** Seed a lab fleet with N known MCP clients and servers plus shadow deployments; measure discovery recall of agentpcap against the header-heuristic class [5] and against active probing [15] on the same live traffic.
-- **M2 — Overhead.** Measure tap overhead against AgentSight's published sub-3% with the equivalent collectors [12].
-- **M3 — Transport coverage.** A coverage matrix over stdio, Streamable HTTP, legacy HTTP+SSE, custom transports, and A2A. The survey says today's systems each leave at least one of these uncovered [4][5][10].
-- **M4 — Ledger fidelity.** Capture capability drift between sessions and confirm the ledger surfaces it without decryption; static scanners detect the same pattern only at scan time [27].
-- **M5 — Unidentified-flow triage.** Score the unidentified class against the metadata-classification baseline [21] and the prober baseline [15]: precision of the "agent-shaped, unattributed" label.
-- **M6 — Gate handoff.** Ledger-to-verdict latency against the 2-second criteria-scoring budget [29] on representative event bursts.
+- **M001 — Shadow discovery.** Seed a lab fleet with N known MCP clients and servers plus shadow deployments; measure discovery recall of agentpcap against the header-heuristic class [5] and against active probing [15] on the same live traffic.
+- **M002 — Overhead.** Measure tap overhead against AgentSight's published sub-3% with the equivalent collectors [12].
+- **M003 — Transport coverage.** A coverage matrix over stdio, Streamable HTTP, legacy HTTP+SSE, custom transports, and A2A. The survey says today's systems each leave at least one of these uncovered [4][5][10].
+- **M004 — Ledger fidelity.** Capture capability drift between sessions and confirm the ledger surfaces it without decryption; static scanners detect the same pattern only at scan time [27].
+- **M005 — Unidentified-flow triage.** Score the unidentified class against the metadata-classification baseline [21] and the prober baseline [15]: precision of the "agent-shaped, unattributed" label.
+- **M006 — Gate handoff.** Ledger-to-verdict latency against the 2-second criteria-scoring budget [29] on representative event bursts.
 
-Passing M1 with M3's full matrix, at M2's cost, is the demo result that justifies the project.
+Passing M001 with M003's full matrix, at M002's cost, is the demo result that justifies the project.
 
 # 8. Build or reuse: the argument
 
