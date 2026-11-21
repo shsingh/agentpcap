@@ -273,7 +273,13 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             {
                                 Some(inode) => format!("pipe:{inode}"),
                                 // a live non-pipe fd: not stdio traffic
-                                _ => String::from("skipped"),
+                                _ => {
+                                    eprintln!(
+                                        "agentpcap tap: skip: pid={machine_pid} fd={} link={text}",
+                                        s.fd
+                                    );
+                                    String::from("skipped")
+                                }
                             }
                         })
                         .and_then(|peer| if peer == "skipped" { None } else { Some(peer) });
