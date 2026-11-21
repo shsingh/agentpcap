@@ -15,15 +15,16 @@ fn l006_required_fields_serialize() {
         mode: Mode::Attributed,
         verdict: Verdict::Mcp,
         event: "tools-call".into(),
-        method: "tools/call".into(),
+        method: Some("tools/call".into()),
         tool_name: Some("read".into()),
         cap_fingerprint: Some("ab12cd34".into()),
         protocol_version: Some("2025-11-25".into()),
         session_id: Some("s-1".into()),
         peer: "pipe:1234->1235".into(),
         dedup: "5t-1".into(),
-        evidence: vec!["stdio-pipe".into()],
+        evidence: Some(vec!["stdio-pipe".into()]),
         source: "tap".into(),
+        payload: None,
         schema_version: "1.0".into(),
     };
     let v = serde_json::to_value(&e).unwrap();
