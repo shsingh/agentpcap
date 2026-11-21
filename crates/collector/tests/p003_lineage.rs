@@ -115,5 +115,3 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     assert_eq!(cache.len(), 1, "one cached lineage entry");
     let _ = child.wait().expect("child exits after its sleep");
 }
-
-
