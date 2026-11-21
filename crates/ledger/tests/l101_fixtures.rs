@@ -7,7 +7,7 @@ use agentpcap_ledger::conformance;
 use std::path::PathBuf;
 
 #[test]
-fn l10_fixtures_answer_their_expectations() {
+fn l101_fixtures_answer_their_expectations() {
     let dir = std::env::var("AGENTPCAP_FIXTURE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
