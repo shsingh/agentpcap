@@ -20,15 +20,15 @@ pub struct PipeSample {
     ppid: u32,
     len: u32,
     pad: [u8; 4],
-    first_bytes: [u8; 128],
+    first_bytes: [u8; 256],
 }
 
-const _: () = assert!(core::mem::size_of::<PipeSample>() == 144);
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
 
-const PAYLOAD_BYTES_CAP: u32 = 128;
+const PAYLOAD_BYTES_CAP: u32 = 256;
 
 #[map(name = "pipe_events")]
-static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
+static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
 
 const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;
@@ -56,16 +56,70 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
         count
     };
 
+    // The invoke counter lives before the capture filter: health stays
+    // independent of the filter (ADR 0003).
     unsafe {
         if let Some(slot) = CANARY.get_ptr_mut(SLOT_INVOKE) {
             *slot += 1;
         }
+    }
+
+    // Capture filter: only JSON-RPC candidate lines and the calibration
+    // sentinel ride the queue (spec framing: MCP over stdio is line-
+    // delimited JSON-RPC starting `{`). The sniff skips leading
+    // whitespace and requires the `jsonrpc` member within the first 40
+    // bytes, so member reordering such as `{"id":3,"jsonrpc":...}` still
+    // rides. Everything else is non-agent traffic and never becomes a
+    // sample (ADR 0003).
+    unsafe {
+        let mut sniff: [u8; 40] = [0u8; 40];
+        if bpf_probe_read_user_buf(buf as *const u8, &mut sniff).is_err() {
+            return 0;
+        }
+        if sniff.starts_with(b"agentpcap-c") {
+            // the calibration sentinel rides
+        } else {
+            let mut j = 0usize;
+            while j < 16 {
+                let c = sniff[j];
+                if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if sniff[j] != b'{' {
+                return 0;
+            }
+            let mut is_jsonrpc = false;
+            let mut k = j;
+            while k + 7 <= 40 {
+                if sniff[k] == b'j'
+                    && sniff[k + 1] == b's'
+                    && sniff[k + 2] == b'o'
+                    && sniff[k + 3] == b'n'
+                    && sniff[k + 4] == b'r'
+                    && sniff[k + 5] == b'p'
+                    && sniff[k + 6] == b'c'
+                {
+                    is_jsonrpc = true;
+                    break;
+                }
+                k += 1;
+            }
+            if !is_jsonrpc {
+                return 0;
+            }
+        }
+    }
+
+    unsafe {
         let mut sample = PipeSample {
             pid: (bpf_get_current_pid_tgid() >> 32) as u32,
             ppid: 0,
             len: take as u32,
             pad: [0; 4],
-            first_bytes: [0u8; 128],
+            first_bytes: [0u8; 256],
         };
         if take > 0 {
             if bpf_probe_read_user_buf(buf as *const u8, &mut sample.first_bytes[..take]).is_err() {
