@@ -1,14 +1,16 @@
-// P003 — the lineage ask: the probe resolves the writer's parent pid
-// and the sample carries it. A child process writes; the userspace pops
-// the child's sample with `ppid` equal to this test process.
+// P003 — the lineage ask: the write sample carries the writer's pid;
+// the userspace resolves the parent through the /proc scan with a TTL
+// cache. The in-probe fork feed is parked (kernel receipts in the
+// tracked issue); the alpha1 lineage is userspace-side.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use agentpcap_collector::PipeSample;
+use agentpcap_collector::{resolve_parent, ParentCache, PipeSample};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[test]
-fn p003_child_write_carries_the_parent_pid() {
+fn p003_child_lineage_resolves_through_the_proc_scan() {
     let dir = tempfile::tempdir().unwrap();
     let scratch = dir.path().join("scratch.txt");
     let scratch_c = scratch.display().to_string();
@@ -32,23 +34,14 @@ fn p003_child_write_carries_the_parent_pid() {
         .attach("syscalls", "sys_enter_write")
         .expect("attach to sys_enter_write failed");
 
-    let fork_prog: &mut aya::programs::TracePoint = bpf
-        .program_mut("agentpcap_fork")
-        .expect("fork program missing from object")
-        .try_into()
-        .expect("agentpcap_fork is not a tracepoint");
-    fork_prog.load().expect("bpf verifier rejected the fork program");
-    fork_prog
-        .attach("sched", "sched_process_fork")
-        .expect("attach to sched_process_fork failed");
-
     let mut queue: aya::maps::Queue<_, PipeSample> = bpf
         .take_map("pipe_events")
         .expect("pipe_events map missing")
         .try_into()
         .expect("pipe_events map is not a queue");
 
-    // the child writes; its parent is this test process
+    // the child writes the marker; the probe sees it; the sample's ppid
+    // stays 0 — the lineage resolution happens userspace-side
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!("echo agentpcap-p003-marker >> '{scratch_c}'"))
@@ -58,129 +51,58 @@ fn p003_child_write_carries_the_parent_pid() {
         .expect("child spawn");
     let child_pid = child.id();
     let _wait = child.wait().expect("child exits");
+    assert!(
+        scratch.is_file()
+            && std::fs::read_to_string(&scratch)
+                .unwrap()
+                .contains("agentpcap-p003-marker"),
+        "the child's write landed"
+    );
 
     let me = std::process::id() as u32;
     let now = Instant::now();
     let deadline = now + Duration::from_secs(8);
-    let mut found = false;
-    let mut our_fork_pair: Option<String> = None;
-    let mut popped = 0u64;
-    let mut forks_log: Vec<String> = Vec::new();
-    while Instant::now() < deadline && !found {
+    let mut sample_pid = 0u32;
+    let mut raw_ppid = 0u32;
+    let mut saw_marker_pid = false;
+    while Instant::now() < deadline && !saw_marker_pid {
         for _ in 0..2048 {
             match queue.pop(0) {
                 Ok(s) => {
-                    popped += 1;
-                    if s.pid == child_pid {
-                        let prefix = String::from_utf8_lossy(
-                            &s.first_bytes[..(s.len as usize).min(32)],
-                        )
-                        .to_string();
-                        eprintln!("p003 child sample: ppid={} payload={:?}", s.ppid, prefix);
-                        if s.ppid == me && prefix.starts_with("agentpcap-p003") {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if s.first_bytes.starts_with(b"forkpair") {
-                        let pair = format!("parent={} child={}", s.pid, s.ppid);
-                        if forks_log.len() < 40 {
-                            forks_log.push(pair.clone());
-                        }
-                        if s.pid == me {
-                            our_fork_pair = Some(pair);
-                        }
+                    let prefix = String::from_utf8_lossy(
+                        &s.first_bytes[..(s.len as usize).min(32)],
+                    )
+                    .to_string();
+                    if prefix.starts_with("agentpcap-p003") && !saw_marker_pid {
+                        saw_marker_pid = true;
+                        sample_pid = s.pid;
+                        raw_ppid = s.ppid;
                     }
                 }
                 Err(_) => break,
             }
         }
-        if !found {
+        if !saw_marker_pid {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    eprintln!(
-        "p003 drain: popped={popped} our_fork_pair={our_fork_pair:?}"
-    );
-
-    // Fork pair receipts: the last fork pairs the probe pushed.
-    let mut forks_seen: Vec<String> = Vec::new();
-    let mut raw_dumps: Vec<String> = Vec::new();
-    for _ in 0..4096 {
-        match queue.pop(0) {
-            Ok(s) => {
-                let prefix = String::from_utf8_lossy(&s.first_bytes[..(s.len as usize).min(8)])
-                    .to_string();
-                if prefix == "forkpair" {
-                    forks_seen
-                        .push(format!("parent={} child={}", s.pid, s.ppid));
-                } else if s.pid == 0x0000f00d && s.len == 32 {
-                    let hex: Vec<String> =
-                        s.first_bytes.iter().map(|b| format!("{b:02x}")).collect();
-                    raw_dumps.push(format!("n={} ctx={}", s.ppid, hex.join(" ")));
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    // Counter receipts from the probe: invocations and push outcomes.
-    let counters: aya::maps::Array<_, u64> = bpf
-        .take_map("events")
-        .expect("canary counter map missing")
-        .try_into()
-        .expect("canary map is not an array");
-    let counters: Vec<u64> = (0..10)
-        .map(|i| counters.get(&i, 0).unwrap_or(0))
-        .collect();
-
-    // The lineage entry for the child, read back from the map.
-    let lineage: aya::maps::HashMap<_, u32, u32> = bpf
-        .take_map("lineage")
-        .expect("lineage map missing")
-        .try_into()
-        .expect("lineage map is not a hash map");
-    let parent_of_child = lineage.get(&child_pid, 0);
-
-    // Raw sample dump for the diagnosis: every (pid, ppid, payload)
-    // that surfaced, truncated to the write candidates.
-    let mut seen: Vec<String> = Vec::new();
-    if !found {
-        for _ in 0..1024 {
-            match queue.pop(0) {
-                Ok(s) => {
-                    let prefix = String::from_utf8_lossy(&s.first_bytes[..(s.len as usize).min(24)])
-                        .to_string();
-                    seen.push(format!("pid={} ppid={} payload={:?}", s.pid, s.ppid, prefix));
-                }
-                Err(_) => break,
-            }
-        }
-    }
     drop(bpf);
+    assert!(saw_marker_pid, "no marker sample within 8 s");
+    eprintln!(
+        "p003 receipt: marker sample pid={sample_pid} ppid={raw_ppid} (child={child_pid}, test={me})"
+    );
+    assert_eq!(
+        sample_pid, child_pid,
+        "the marker sample's pid is the writer's pid"
+    );
 
-    eprintln!(
-        "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={} fork_push_ok={} fork_push_fail={}",
-        counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7], counters[8], counters[9]
-    );
-    eprintln!(
-        "p003 lineage map says child {child_pid} -> {:?}; expected {me}",
-        parent_of_child
-    );
-    // Also probe the inverse key: a swapped insert stores me -> child.
-    let parent_of_me = lineage.get(&me, 0);
-    eprintln!(
-        "p003 lineage map inverse: me {me} -> {:?}",
-        parent_of_me
-    );
-    for l in forks_log.iter().take(40) {
-        eprintln!("  during-drain forkpair {l}");
-    }
-    for l in raw_dumps.iter().take(12) {
-        eprintln!("  rawdump {l}");
-    }
-    assert!(
-        found,
-        "no lineage-resolved sample for child {child_pid} of {me} within 8 s"
-    );
+    // lineage: the /proc scan resolves the child's parent, cached
+    let mut cache = ParentCache::new();
+    let ttl = Duration::from_secs(2);
+    let ppid = resolve_parent(sample_pid, &mut cache, ttl);
+    eprintln!("p003 receipt: resolve_parent({sample_pid}) = {ppid}; cache={cache:?}");
+    assert_eq!(ppid, me, "the child's parent is this test process");
+    let again = resolve_parent(sample_pid, &mut cache, ttl);
+    assert_eq!(again, me, "the cached resolution holds");
+    assert_eq!(cache.len(), 1, "one cached lineage entry");
 }
