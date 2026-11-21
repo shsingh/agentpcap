@@ -5,20 +5,12 @@ title: Design
 ## Components
 
 The instrument is one binary with six components: a socket collector
-(eBPF, cgroup-filtered), a TLS-boundary collector (uprobes; attributed
-mode only), a pipe collector for the stdio transport, the reassembler
+(eBPF, cgroup-filtered), a TLS-boundary collector (uprobes; runs by
+default), a pipe collector for the stdio transport, the reassembler
 that turns frames into session events, the ledger writer, and the
 operator CLI (`record`, `report`, `diff`, `export`).
 
 ![agentpcap internal pipeline: collectors, reassembly, ledger, gate](assets/fig1-pipeline.png)
-
-## The data path
-
-```
-socket collector (eBPF) ─┐
-TLS-boundary collector ──┼─→ ring buffer → reassembler → classifier → ledger ──→ gate stream
-pipe collector (stdio) ──┘                                        └──→ report · diff · export
-```
 
 Capture is read-only: no interception, no termination, no path change.
 Capture loss degrades the ledger; the path is never affected.
