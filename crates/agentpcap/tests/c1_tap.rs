@@ -57,8 +57,9 @@ fn c100_tap_ledgers_the_classified_flow() {
     let _ = sink.wait().expect("sink exits");
 
     // the exclusion vector: the same jsonrpc candidate written to a
-    // regular file by a live process — the tap resolves the live fd,
-    // sees a non-pipe, and never records it
+    // regular file by a live process — the write's fd stays open for the
+    // whole tap window (a realistic file-session), so the tap resolves
+    // the live fd, sees a non-pipe, and never records it
     let file_frame = dir.path().join("file-frame.txt");
     let mut g = std::fs::OpenOptions::new()
         .create(true)
@@ -71,10 +72,10 @@ fn c100_tap_ledgers_the_classified_flow() {
     )
     .unwrap();
     let _ = g.flush();
-    drop(g);
 
     let st = tap.wait().expect("tap exits");
     assert!(st.success(), "tap must exit cleanly");
+    drop(g);
 
     // the report answers
     let out = bin()
