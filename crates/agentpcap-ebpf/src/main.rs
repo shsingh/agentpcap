@@ -23,9 +23,9 @@ pub struct PipeSample {
     first_bytes: [u8; 32],
 }
 
-const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 144);
 
-const PAYLOAD_BYTES_CAP: u32 = 32;
+const PAYLOAD_BYTES_CAP: u32 = 128;
 
 #[map(name = "pipe_events")]
 static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
