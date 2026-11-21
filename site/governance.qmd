@@ -49,6 +49,11 @@ claim rises above the declared level. The release tag is signed
 (`git tag -s`) and points at the gate pull request's merge commit; the
 release workflow refuses a tag without its committed gate report.
 
+Browse the artifact attestations on GitHub:
+[github.com/shsingh/agentpcap/attestations](https://github.com/shsingh/agentpcap/attestations).
+Every entry pins the artifact digest and points at the release workflow run
+that built it.
+
 Verify any release binary before running it:
 
 ```bash
