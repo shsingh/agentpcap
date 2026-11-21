@@ -25,7 +25,7 @@ const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);
 
 const PAYLOAD_BYTES_CAP: u32 = 32;
 
-#[map(name = "pipe-events")]
+#[map(name = "pipe_events")]
 static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
 
 #[map(name = "events")]

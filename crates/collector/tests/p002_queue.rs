@@ -31,10 +31,10 @@ fn p002_probe_emits_and_userspace_reads_back() {
         .expect("attach to sys_enter_write failed");
 
     let mut queue: aya::maps::Queue<_, PipeSample> = bpf
-        .take_map("pipe-events")
-        .expect("pipe-events map missing")
+        .take_map("pipe_events")
+        .expect("pipe_events map missing")
         .try_into()
-        .expect("pipe-events map is not a queue");
+        .expect("pipe_events map is not a queue");
 
     // Our own writes drive the probe; the queue carries our sample back.
     let me = std::process::id();
