@@ -58,7 +58,6 @@ fn c100_tap_ledgers_the_classified_flow() {
 
     let st = tap.wait().expect("tap exits");
     assert!(st.success(), "tap must exit cleanly");
-    drop(g);
 
     // the report answers
     let out = bin()
