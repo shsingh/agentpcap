@@ -28,7 +28,7 @@ const _: () = assert!(core::mem::size_of::<PipeSample>() == 144);
 const PAYLOAD_BYTES_CAP: u32 = 128;
 
 #[map(name = "pipe_events")]
-static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
+static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
 
 const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;

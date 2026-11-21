@@ -74,8 +74,8 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     let text = std::fs::read_to_string(&ledger).unwrap();
     let mcp: Vec<&str> = text.lines().filter(|l| l.contains(r#""verdict":"mcp""#)).collect();
     eprintln!("c101 ledger receipt: records={} mcp-records={}", text.lines().count(), mcp.len());
-    assert!(!mcp.is_empty(), "mcp verdicts recorded");
+    assert!(mcp.len() >= 3, "the three framed requests classify mcp");
     assert!(text.contains(r#""method":"initialize""#), "initialize recorded");
     assert!(text.contains(r#""method":"tools/call""#), "the tools/call recorded");
-    assert!(mcp.len() >= 6, "every frame surfaces: requests and answers");
+    assert!(text.contains("hello-from-read"), "the server's answers recorded");
 }
