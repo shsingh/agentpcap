@@ -152,7 +152,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     while Instant::now() < deadline && offset.is_none() {
         match queue.pop(0) {
             Ok(s) => {
-                let n = (s.len as usize).min(32);
+                let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
                 if s.first_bytes[..n].starts_with(b"agentpcap-calib") {
                     offset = Some(s.pid as i64 - own as i64);
                 }
@@ -189,7 +189,8 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                     continue;
                 }
                 let machine_pid = machine_pid as u32;
-                let payload_bytes = &s.first_bytes[..(s.len as usize).min(32)];
+                let payload_bytes =
+                    &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
                 match classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) {
                     Decision::Other => continue,
                     decision => {
