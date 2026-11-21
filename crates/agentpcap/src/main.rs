@@ -250,22 +250,32 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                                     .ok()
                             })
                             .unwrap_or_default();
-                        let Some(inode) = link
+                        let link = link
                             .strip_prefix("pipe:[")
                             .and_then(|r| r.strip_suffix(']'))
-                        else {
-                            eprintln!(
-                                "agentpcap tap: skipped: pid={machine_pid} fd={} link not a pipe ({link})",
-                                s.fd
-                            );
-                            continue;
+                            .map(|i| format!("pipe:{i}"))
+                            .unwrap_or_default();
+                        // a live fd naming a non-pipe is not stdio traffic
+                        // (a regular file, a socket): no record. A writer
+                        // whose /proc entry already died (redirected
+                        // builtins fork, write, and exit within the pop
+                        // window) still lands, keyed honestly as
+                        // unresolved — the alpha2 in-kernel fd resolution
+                        // replaces this.
+                        let died_unresolved = link.is_empty();
+                        let peer = if died_unresolved {
+                            "unresolved".to_string()
+                        } else {
+                            link
                         };
-                        let peer = format!("pipe:{inode}");
                         let ppid =
                             resolve_parent(machine_pid, &mut cache, Duration::from_secs(2));
                         let mut evidence = vec!["stdio-pipe".to_string()];
                         if ppid != 0 {
                             evidence.push(format!("lineage:parent-{ppid}"));
+                        }
+                        if died_unresolved {
+                            evidence.push("fd-unresolved-at-pop".into());
                         }
                         let event = Event {
                             ts: now_rfc3339(),
