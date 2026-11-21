@@ -52,13 +52,14 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
         .spawn()
         .expect("child spawn");
     let child_pid = child.id();
-    assert!(
-        scratch.is_file()
-            && std::fs::read_to_string(&scratch)
-                .unwrap()
-                .contains("agentpcap-p003-marker"),
-        "the child's write landed"
-    );
+    // settle: the child writes within milliseconds; poll briefly
+    let settled = (0..40).any(|_| {
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::read_to_string(&scratch)
+            .map(|s| s.contains("agentpcap-p003-marker"))
+            .unwrap_or(false)
+    });
+    assert!(settled, "the child's write landed");
 
     let me = std::process::id() as u32;
     let now = Instant::now();
