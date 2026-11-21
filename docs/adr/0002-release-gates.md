@@ -68,6 +68,28 @@ against the published baselines of the survey.
 - Gate rule: M001 passing with M003's full matrix, at M002's cost, is the
   result that decides the project's public claims.
 
+## The documentation sweep inside every gate
+
+A named release never ships with stale documentation. Before the gate
+tag, one sweep updates the operator-facing set and its render gates:
+
+- README: the status line, the perf table, the companion-artifact table
+  and the spec anchors.
+- The docs ledger: ADRs touched by the slice; the specification version
+  line.
+- The roadmap page: regenerated from the live board item list; the gate
+  table re-checked against the open issues.
+- The website: `quarto render site` with the `site-check` gate; the
+  paper render refreshed on the site.
+- The render gates: the paper census rc=0; the specification's mmark and
+  xml2rfc renders rc=0.
+- The mirrors: the tablet `/_inbox` paper copy and the Obsidian project
+  folder refreshed to the released revision.
+
+The sweep rides the gate's release pull request: one pull request, the
+evidence in its body. A gate closes on code evidence and on the updated
+operator-facing set — both or neither.
+
 ## Consequences
 
 - No release before its gate: a slice may ship behind a pre-release
