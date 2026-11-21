@@ -65,7 +65,7 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
             ppid: 0,
             len: take as u32,
             pad: [0; 4],
-            first_bytes: [0u8; 32],
+            first_bytes: [0u8; 128],
         };
         if take > 0 {
             if bpf_probe_read_user_buf(buf as *const u8, &mut sample.first_bytes[..take]).is_err() {
