@@ -17,14 +17,14 @@ fn p000_canary_loads_and_emits_in_vm() {
     );
 
     let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
-    let prog: &mut aya::programs::KProbe = bpf
+    let prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap")
         .expect("program missing from object")
         .try_into()
-        .expect("program is not a kprobe");
+        .expect("program is not a tracepoint");
     prog.load().expect("bpf verifier rejected the program");
-    prog.attach("ksys_write", 0)
-        .expect("attach to ksys_write failed");
+    prog.attach("syscalls", "sys_enter_write")
+        .expect("attach to sys_enter_write failed");
 
     // The probe writes a marker through bpf_printk, observable on the
     // trace buffers. The build VM boots with tracing off; enable it for
