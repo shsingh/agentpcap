@@ -33,21 +33,51 @@ const SAMPLE_BYTES_CAP: usize = 256;
 /// writer's `comm`, and the first bytes of the write buffer. The sample
 /// carries at most `SAMPLE_BYTES_CAP` bytes (sample-first-N-bytes policy).
 ///
-/// Contract (RED until the alpha1 slice implements it):
-/// a complete line with `"jsonrpc": "2.0"` plus an MCP method name
+/// Contract: a complete line with `"jsonrpc": "2.0"` plus an MCP method name
 /// (`initialize`, `tools/list`, `tools/call`, or one of the
-/// `notifications/*` shapes) classifies [`Decision::Mcp`]; non-JSON binary
-/// bytes classify [`Decision::Other`]; everything else, including a sample
-/// with no complete line, classifies [`Decision::AgentUnidentified`].
-///
-/// # Panics
-///
-/// Panics until the alpha1 collector slice implements the match function.
+/// `notifications/*` shapes) classifies [`Decision::Mcp`]; non-ASCII binary
+/// bytes with no JSON object classify [`Decision::Other`]; everything else,
+/// including a sample with no complete line, classifies
+/// [`Decision::AgentUnidentified`] (the safe form).
 pub fn classify_pipe_sample(pid: u32, ppid: u32, comm: &str, first_bytes: &[u8]) -> Decision {
-    // P001/P002 cell. The lineage inputs (pid, ppid, comm) and the framing
-    // scan over `first_bytes` set the Decision. Body lands with alpha1.
-    let _ = (pid, ppid, comm, SAMPLE_BYTES_CAP, first_bytes);
-    unimplemented!(
-        "P001 RED: classify_pipe_sample is the alpha1 match function; tests/p001_red.rs fails here"
-    )
+    let _ = (pid, ppid, comm, SAMPLE_BYTES_CAP);
+
+    let sample = String::from_utf8_lossy(first_bytes);
+
+    // The first JSON object in the sample; a parse failure at one start
+    // position is not a verdict, the sample may hold the object later.
+    let start = match sample.find('{') {
+        Some(i) => i,
+        None => {
+            // No JSON shape at all. Non-ASCII bytes are binary traffic.
+            return if sample.bytes().any(|b| !b.is_ascii()) {
+                Decision::Other
+            } else {
+                Decision::AgentUnidentified
+            };
+        }
+    };
+    let candidate = &sample[start..];
+    let object = match serde_json::from_str::<serde_json::Value>(candidate) {
+        Ok(v) => v,
+        // A truncated sample (sample-first-N-bytes) must not guess.
+        Err(_) => {
+            return if sample.starts_with('{') {
+                Decision::AgentUnidentified
+            } else {
+                Decision::AgentUnidentified
+            };
+        }
+    };
+    let Some(obj) = object.as_object() else {
+        return Decision::AgentUnidentified;
+    };
+    if obj.get("jsonrpc").and_then(|j| j.as_str()) != Some("2.0") {
+        return Decision::AgentUnidentified;
+    }
+    match obj.get("method").and_then(|m| m.as_str()) {
+        Some("initialize") | Some("tools/list") | Some("tools/call") => Decision::Mcp,
+        Some(m) if m.starts_with("notifications/") => Decision::Mcp,
+        _ => Decision::AgentUnidentified,
+    }
 }
