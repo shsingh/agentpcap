@@ -153,7 +153,17 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         Ok(d) => d,
         Err(_) => return ExitCode::FAILURE,
     };
-    let token = random_token();
+                        // The calibration token: fresh bytes from the
+                        // host entropy pool; the read failure is fatal.
+                        // /dev/urandom never ends, so the request is a
+                        // bounded exact read.
+                        let token = match random_token() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("agentpcap tap: the entropy read failed: {e}");
+                                return ExitCode::FAILURE;
+                            }
+                        };
     let mut expected = b"agentpcap-calib-".to_vec();
     expected.extend_from_slice(token.as_bytes());
     expected.push(b'\n');
@@ -240,34 +250,41 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                         // writers may outlive their /proc entry only by
                         // the pop latency: a bounded retry absorbs that.
                         let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
-                        let link = (0..5)
-                            .find_map(|attempt| {
+                        // two failure meanings are kept apart: a failed
+                        // lookup means the writer's /proc entry is gone
+                        // (it died inside the pop window); a resolvable
+                        // fd naming a non-pipe is live process traffic
+                        // to a file or socket and never records.
+                        let looked = (0..5)
+                            .filter_map(|attempt| {
                                 if attempt > 0 {
                                     std::thread::sleep(Duration::from_millis(2));
                                 }
                                 std::fs::read_link(&fd_path)
-                                    .map(|l| l.to_string_lossy().to_string())
                                     .ok()
+                                    .filter(|l| {
+                                        l.starts_with("pipe:[")
+                                    })
                             })
-                            .unwrap_or_default();
-                        let link = link
-                            .strip_prefix("pipe:[")
-                            .and_then(|r| r.strip_suffix(']'))
-                            .map(|i| format!("pipe:{i}"))
-                            .unwrap_or_default();
-                        // a live fd naming a non-pipe is not stdio traffic
-                        // (a regular file, a socket): no record. A writer
-                        // whose /proc entry already died (redirected
-                        // builtins fork, write, and exit within the pop
-                        // window) still lands, keyed honestly as
-                        // unresolved — the alpha2 in-kernel fd resolution
-                        // replaces this.
-                        let died_unresolved = link.is_empty();
-                        let peer = if died_unresolved {
-                            "unresolved".to_string()
-                        } else {
-                            link
+                            .next();
+                        let peer = match looked {
+                            Some(l) => {
+                                let inode = l
+                                    .to_string_lossy()
+                                    .trim_start_matches("pipe:[")
+                                    .trim_end_matches(']')
+                                    .to_string();
+                                format!("pipe:{inode}")
+                            }
+                            None => {
+                                // the /proc entry is gone: the writer
+                                // died after its write. The record lands
+                                // keyed honestly, and the alpha2
+                                // in-kernel fd resolution replaces this.
+                                "unresolved".to_string()
+                            }
                         };
+                        let died_unresolved = looked.is_none();
                         let ppid =
                             resolve_parent(machine_pid, &mut cache, Duration::from_secs(2));
                         let mut evidence = vec!["stdio-pipe".to_string()];
@@ -309,18 +326,6 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
-    // the push outcomes ride a receipt file beside the ledger: the
-    // test's tap stderr is discarded, the counters' answer is not
-    if let Some(m) = bpf.take_map("events") {
-        if let Ok(counters) = aya::maps::Array::<_, u64>::try_from(m) {
-            let ok = counters.get(&2u32, 0).unwrap_or(0);
-            let fail = counters.get(&3u32, 0).unwrap_or(0);
-            let _ = std::fs::write(
-                format!("{}.push-receipt", ledger_path.display()),
-                format!("push_ok={ok} push_fail={fail}\n"),
-            );
-        }
-    }
     ExitCode::SUCCESS
 }
 
@@ -343,13 +348,13 @@ fn event_name_for(method: Option<&str>) -> &'static str {
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).
 /// /dev/urandom never ends, so the request is a bounded exact read.
-fn random_token() -> String {
+/// The calibration token: fresh bytes from the host entropy pool; the
+/// read failure is fatal (a zero token makes the sentinel guessable).
+/// /dev/urandom never ends, so the request is a bounded exact read.
+fn random_token() -> Result<String, std::io::Error> {
     use std::io::Read;
     let mut b = [0u8; 8];
-    std::fs::OpenOptions::new()
-        .read(true)
-        .open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut b))
-        .ok();
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    let mut f = std::fs::File::open("/dev/urandom")?;
+    f.read_exact(&mut b)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }

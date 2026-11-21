@@ -32,9 +32,10 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .expect("agentpcap binary");
     std::thread::sleep(Duration::from_millis(1200));
 
-    // the MCP server: a child of this test process, frames on stdin,
-    // replies on a piped stdout (a real pipe: the tap sees it, and the
-    // pipe inode gives the replies a channel-keyed peer)
+    // the MCP server: a child of this test process, frames on its
+    // piped stdin, replies on its piped stdout — one real pipe per
+    // channel; the shell itself is the writer for both (no redirection
+    // forks), so the tap resolves its live fds to the channel inodes
     let mut server = Command::new("sh")
         .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/mcp-server.sh")
         .stdin(Stdio::piped())
@@ -43,6 +44,22 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .spawn()
         .expect("server spawn");
     let server_pid = server.id();
+    let reply_fd = server.stdout.as_ref().unwrap().as_raw_fd();
+    // the reply channel's peer key: the inode of this test's read end
+    let reply_peer = std::fs::read_link(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        reply_fd
+    ))
+    .map(|l| {
+        format!(
+            "pipe:{}",
+            l.to_string_lossy()
+                .trim_start_matches("pipe:[")
+                .trim_end_matches(']')
+        )
+    })
+    .expect("the reply pipe's read end resolves to its inode");
     let mut server_out = server.stdout.take().unwrap();
     let mut server_in = server.stdin.take().unwrap();
     // drain the reply pipe concurrently: the responses = the server's
@@ -87,11 +104,6 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     eprintln!("c101 receipt: server_pid={server_pid} replies={}", replied.lines().count());
     assert_eq!(replied.lines().count(), 3, "three answers on the reply pipe");
 
-    // the tap's push receipts: the counters tell whether the reply
-    // samples ever pushed
-    let receipt = std::fs::read_to_string(format!("{}.push-receipt", ledger.display()))
-        .unwrap_or_else(|_| "(missing receipt file)".into());
-    eprintln!("c101 push receipt: {}", receipt.trim());
     let text = std::fs::read_to_string(&ledger).unwrap();
     let recs: Vec<serde_json::Value> = text
         .lines()
@@ -102,18 +114,12 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .iter()
         .filter(|r| r["pid"].as_u64() == Some(own))
         .collect();
-    // the reply records: the reply writer can die inside the tap's pop
-    // window (dash forks for redirected builtins), so its /proc entry and
-    // the pipe inode are gone; those records key `peer=unresolved` and
-    // carry `fd-unresolved-at-pop` evidence. Select the replies by the
-    // writer's process shape plus their jsonrpc result payloads.
+    // the reply records: tied to the scenario's reply channel — the peer
+    // names the inode of the pipe this test reads, so ambient jsonrpc
+    // from unrelated processes cannot enter the set
     let server: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| {
-            r["pid"].as_u64() != Some(own)
-                && r["payload"].is_object()
-                && r["payload"]["result"].is_object()
-        })
+        .filter(|r| r["peer"].as_str() == Some(reply_peer.as_str()))
         .collect();
     eprintln!(
         "c101 ledger receipt: records={} client-records={} server-records={} pids={:?} methods={:?}",

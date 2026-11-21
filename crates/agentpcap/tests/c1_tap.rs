@@ -56,6 +56,23 @@ fn c100_tap_ledgers_the_classified_flow() {
     drop(f);
     let _ = sink.wait().expect("sink exits");
 
+    // the exclusion vector: the same jsonrpc candidate written to a
+    // regular file by a live process — the tap resolves the live fd,
+    // sees a non-pipe, and never records it
+    let file_frame = dir.path().join("file-frame.txt");
+    let mut g = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_frame)
+        .unwrap();
+    writeln!(
+        g,
+        r#"{{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{{}}}}"#
+    )
+    .unwrap();
+    let _ = g.flush();
+    drop(g);
+
     let st = tap.wait().expect("tap exits");
     assert!(st.success(), "tap must exit cleanly");
 
@@ -98,4 +115,8 @@ fn c100_tap_ledgers_the_classified_flow() {
         .iter()
         .find(|v| v["verdict"].as_str() == Some("agent-unidentified"));
     assert!(unid.is_some(), "the methodless result is agent-unidentified");
+    assert!(
+        !text.contains(r#""id":9"#),
+        "a live regular-file write of a jsonrpc candidate is excluded"
+    );
 }

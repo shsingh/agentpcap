@@ -109,8 +109,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     // second writer: another child writes a jsonrpc line while this
     // test drains; its sample must translate to its own pid and
     // resolve to this test process as the parent
-    let scratch2 = std::env::temp_dir().join(format!("p003-second-{}", std::process::id()));
-    std::fs::remove_file(&scratch2).ok();
+    let scratch2 = dir.path().join("second.txt");
     let _f2 = std::fs::File::create(&scratch2).unwrap();
     let scratch2_c = scratch2.display().to_string();
     let mut second = Command::new("sh")
