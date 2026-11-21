@@ -43,7 +43,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
     // the server (a child of the tap's parent chain: the tap is its
     // sibling — the server's parent is this test process)
     let mut server = Command::new("sh")
-        .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../eval/scenario/mcp-server.sh")
+        .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/mcp-server.sh")
         .arg(&f1)
         .arg(&f2)
         .stdout(Stdio::from(std::fs::File::create(&server_out).unwrap()))
@@ -55,7 +55,7 @@ fn c101_the_stdio_scenario_answers_the_report() {
 
     // the client: another child of this test process
     let mut client = Command::new("sh")
-        .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../eval/scenario/scenario-client.sh")
+        .arg(env!("CARGO_MANIFEST_DIR").to_string() + "/../../eval/scenario/scenario-client.sh")
         .arg(&f1)
         .arg(&f2)
         .arg(&log)
