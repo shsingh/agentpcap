@@ -56,10 +56,19 @@ pub fn run(dir: &Path) -> Result<Vec<FixtureResult>, std::io::Error> {
     let mut out = Vec::new();
     for f in names {
         let stem = f.trim_end_matches(".jsonl").to_string();
-        let expected = std::fs::read_to_string(dir.join(format!("{stem}.expect")))?
-            .trim()
-            .to_string();
-        let data = std::fs::read_to_string(dir.join(&f))?;
+        let expected_path = dir.join(format!("{stem}.expect"));
+        let expected = match std::fs::read_to_string(&expected_path) {
+            Ok(e) => e.trim().to_string(),
+            Err(e) => {
+                eprintln!("conformance: read({}) failed: {e}", expected_path.display());
+                return Err(e);
+            }
+        };
+        let data_path = dir.join(&f);
+        let data = std::fs::read_to_string(&data_path).map_err(|e| {
+            eprintln!("conformance: read({}) failed: {e}", data_path.display());
+            e
+        })?;
         let actual = verdict(&data).to_string();
         out.push(FixtureResult {
             name: stem,
