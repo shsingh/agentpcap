@@ -1,0 +1,10 @@
+[package]
+name = "agentpcap"
+description = "A read-only, protocol-aware tap for agent tool calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agentpcap"
+path = "src/main.rs"
