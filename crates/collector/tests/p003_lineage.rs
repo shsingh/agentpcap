@@ -67,13 +67,18 @@ fn p003_child_write_carries_the_parent_pid() {
         for _ in 0..2048 {
             match queue.pop(0) {
                 Ok(s) => {
-                    if s.pid == child_pid
-                        && s.ppid == me
-                        && s.first_bytes[..(s.len as usize).min(32)]
-                            .starts_with(b"agentpcap-p003")
-                    {
-                        found = true;
-                        break;
+                    if s.pid == child_pid {
+                        let prefix = String::from_utf8_lossy(
+                            &s.first_bytes[..(s.len as usize).min(32)],
+                        )
+                        .to_string();
+                        eprintln!("p003 child sample: ppid={} payload={:?}", s.ppid, prefix);
+                        if s.ppid == me
+                            && prefix.starts_with("agentpcap-p003")
+                        {
+                            found = true;
+                            break;
+                        }
                     }
                 }
                 Err(_) => break,
@@ -114,6 +119,17 @@ fn p003_child_write_carries_the_parent_pid() {
     eprintln!(
         "p003 receipts: invokes={} read_fail={} push_ok={} push_fail={} forks={} insert_ok={} insert_fail={} lookup_hit={}",
         counters[0], counters[1], counters[2], counters[3], counters[4], counters[5], counters[6], counters[7]
+    );
+    // The lineage entry for the child, read back from the map.
+    let lineage: aya::maps::HashMap<_, u32, u32> = bpf
+        .take_map("lineage")
+        .expect("lineage map missing")
+        .try_into()
+        .expect("lineage map is not a hash map");
+    let parent_of_child = lineage.get(&child_pid, 0);
+    eprintln!(
+        "p003 lineage map says child {child_pid} -> {:?}; expected {me}",
+        parent_of_child
     );
     if !found {
         eprintln!("p003 samples seen ({}):", seen.len());
