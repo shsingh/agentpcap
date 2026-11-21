@@ -48,6 +48,15 @@ the commit and the gate that ran in the `agentpcap-build-dev` VM
   tamper detection on a mid-chain edit, access-log append-only growth,
   schema mismatch refusal. Issue #14.
 
+## Ledger fixtures — conformance set (issue #14)
+
+| Cell | Spec anchor | Assertion | Status |
+|------|-------------|-----------|--------|
+| L101 | `docs/spec.md#7-the-flow-ledger` | golden fixtures answer `chain-ok`: genesis and the rotated pair (carry verified) | RED: `conformance::run` missing |
+| L102 | `docs/spec.md#7-the-flow-ledger` | tampered fixture answers `chain-broken` | RED: `conformance::run` missing |
+| L103 | `docs/spec.md#7-the-flow-ledger` | torn fixture answers `torn-tail` | RED: `conformance::run` missing |
+| L104 | `docs/spec.md#4-event-record-schema` | schema-mismatch fixture answers `schema-mismatch`; a writer record carrying a foreign `schema_version` is refused | RED: refusal and runner missing |
+
 ## Green gate rule
 
 A cell moves to green only on a fresh run in the build VM. The run
