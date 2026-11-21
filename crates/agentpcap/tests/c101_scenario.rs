@@ -151,4 +151,3 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
     assert!(answer.contains(r#""method":"tools/call""#), "the report lists the tool call");
     assert!(answer.contains("hello-from-read"), "the report lists the tool result");
 }
-
