@@ -10,7 +10,7 @@ use aya_ebpf::bpf_printk;
 
 #[kprobe]
 pub fn agentpcap(_ctx: ProbeContext) -> i64 {
-    bpf_printk!(c"canary-agentpcap-p000");
+    unsafe { bpf_printk!(c"canary-agentpcap-p000") };
     0
 }
 
