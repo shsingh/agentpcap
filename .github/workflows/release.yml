@@ -50,6 +50,8 @@ jobs:
           rustup toolchain install nightly --component rust-src
           sudo apt-get update -q
           sudo apt-get install -yq llvm-19-dev clang-19 lld-19 libpolly-19-dev
+          echo "/usr/lib/llvm-19/bin" >> "$GITHUB_PATH"
+          echo "LLVM_PREFIX=/usr/lib/llvm-19" >> "$GITHUB_ENV"
           echo "LLVM_SYS_191_PREFIX=/usr/lib/llvm-19" >> "$GITHUB_ENV"
           cargo install --locked bpf-linker
       - name: Build the eBPF probe (the CLI embeds it)
