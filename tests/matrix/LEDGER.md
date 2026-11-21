@@ -25,15 +25,28 @@ the commit and the gate that ran in the `agentpcap-build-dev` VM
 
 | Cell | Spec anchor | Assertion | Status |
 |------|-------------|-----------|--------|
-| P001 | `docs/spec.md#5-collectors` | userspace match: JSON-RPC framing over a pipe sample -> `mcp`; non-JSON -> `other`; unknown agent framing -> `agent-unidentified` | RED draft on `feat/probe-spike` (spike note with verified probe receipts), implementation pending |
+| P000 | `docs/spec.md#5-collectors` | the eBPF canary: object builds for `bpfel-unknown-none`, loads into the build-VM kernel, attaches `syscalls:sys_enter_write`, and the bpf array counter is read back greater than zero in-process | RED (object absent), GREEN on `feat/2026.01-alpha1` |
+| P001 | `docs/spec.md#5-collectors` | userspace match: JSON-RPC framing over a pipe sample -> `mcp`; non-JSON -> `other`; unknown agent framing -> `agent-unidentified` | RED draft on main (8 of 8 failing on the unimplemented match), implementation pending |
+
+### P000 design receipts
+
+- A kprobe on `ksys_write` attaches but never fires on the OrbStack
+  kernel (7.2.12): tracefs records nothing for it, and the map counter
+  stayed at zero. The tracepoint equivalent fires instantly.
+- `tracefs` content is unusable on this kernel even with tracepoints
+  enabled and `tracing_on` set; the BPF-map readback is the only valid
+  emit path. The alpha1 canary therefore reads a counter in-process and
+  never touches tracefs.
+- A bpf-side `HashMap` lookup for a never-written key returns no
+  pointer: the counter rides a pre-allocated `Array` slot.
+- `bpf_printk` is unusable as the receipt path on this kernel for the
+  same reason as the trace-buffer emptiness.
 
 ## Planned (alpha1 remainder)
 
 - L101–L104 conformance fixtures: chained rotation across segments,
   tamper detection on a mid-chain edit, access-log append-only growth,
   schema mismatch refusal. Issue #14.
-- The eBPF canary cell: compile and attach a minimal aya probe in the
-  `agentpcap-build-dev` VM. Issue #10.
 
 ## Green gate rule
 
