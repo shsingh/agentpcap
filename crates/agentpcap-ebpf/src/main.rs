@@ -1,7 +1,9 @@
 // The agentpcap probe. The alpha1 tap: a tracepoint on the write
-// syscall that pushes one pipe sample per write into the `pipe-events`
-// queue and keeps the canary counter current.
-// Spec: docs/spec.md#5-collectors. The ppid lineage lands with P003.
+// syscall that pushes one pipe sample per write into the `pipe_events`
+// queue and keeps the canary counter current. The sample's ppid is 0;
+// lineage resolves userspace-side (P003) — the in-probe fork feed is
+// parked with its tracked kernel receipts.
+// Spec: docs/spec.md#5-collectors.
 #![no_std]
 #![no_main]
 
@@ -28,13 +30,13 @@ const PAYLOAD_BYTES_CAP: u32 = 32;
 #[map(name = "pipe_events")]
 static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(1024, 0);
 
-#[map(name = "events")]
-static mut CANARY: Array<u64> = Array::with_max_entries(4, 0);
-
 const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;
 const SLOT_PUSH_OK: u32 = 2;
 const SLOT_PUSH_FAIL: u32 = 3;
+
+#[map(name = "events")]
+static mut CANARY: Array<u64> = Array::with_max_entries(4, 0);
 
 #[tracepoint]
 pub fn agentpcap(mut ctx: TracePointContext) -> i64 {

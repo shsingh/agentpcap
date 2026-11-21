@@ -27,11 +27,9 @@ the commit and the gate that ran in the `agentpcap-build-dev` VM
 |------|-------------|-----------|--------|
 | P000 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the eBPF canary: object builds for `bpfel-unknown-none`, loads into the build-VM kernel, attaches `syscalls:sys_enter_write`, and the bpf array counter is read back greater than zero in-process | RED (object absent), GREEN on `feat/2026.01-alpha1` |
 | P002 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | the emit path: the probe pushes one sample per write into the `pipe_events` queue (pid, ppid, len, first payload bytes) and the userspace reads its own payload back through the typed queue | RED (queue map absent), GREEN on `feat/2026.01-alpha1`; receipts `invokes=24 read_fail=0 push_ok=24` |
-| P001 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | userspace match: JSON-RPC framing over a pipe sample -> `mcp`; non-JSON -> `other`; unknown agent framing -> `agent-unidentified` | RED draft on main (8 of 8 failing on the unimplemented match), implementation pending |
-
-### P000 design receipts
-
-- A kprobe on `ksys_write` attaches but never fires on the OrbStack
+| P001 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | userspace match: JSON-RPC framing over a pipe sample -> `mcp`; non-JSON -> `other`; unknown agent framing -> `agent-unidentified` | GREEN (8 of 8), landed via PR #48 |
+| P003 | [§5 Collectors and transport coverage](https://github.com/shsingh/agentpcap/blob/main/docs/spec.md#5-collectors) | lineage: the marker sample's root pid translates to the writer's pid with the per-boot offset (calibrated from its own sample); `resolve_parent` reads `PPid` from `/proc` with a TTL cache and the cache serves the second ask | GREEN on `feat/2026.01-alpha1`; receipts `resolve_parent=30396`, cache 1 of 1; the in-probe fork feed parked in issue #55 with kernel receipts |
+kprobe on `ksys_write` attaches but never fires on the OrbStack
   kernel (7.2.12): tracefs records nothing for it, and the map counter
   stayed at zero. The tracepoint equivalent fires instantly.
 - `tracefs` content is unusable on this kernel even with tracepoints

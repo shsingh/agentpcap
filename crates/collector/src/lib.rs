@@ -46,6 +46,51 @@ unsafe impl aya::Pod for PipeSample {}
 
 pub const PAYLOAD_BYTES_CAP: usize = 32;
 
+/// The parent-pid cache: a pid resolved recently, cached with the time
+/// of the resolution. The caller drops stale entries.
+pub type ParentCache = std::collections::HashMap<u32, (u32, std::time::Instant)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParentCacheEntry {
+    pub pid: u32,
+    pub ppid: u32,
+    pub resolved_at: std::time::Instant,
+}
+
+impl ParentCacheEntry {
+    pub fn fresh(&self, ttl: Duration) -> bool {
+        self.resolved_at.elapsed() <= ttl
+    }
+}
+
+use std::time::Duration;
+
+/// Resolve the parent pid of `pid` through `/proc/<pid>/status` (the
+/// `PPid` line) and cache the answer for `ttl`. A process that has
+/// exited resolves to `0`; the cache entry drops.
+pub fn resolve_parent(pid: u32, cache: &mut ParentCache, ttl: Duration) -> u32 {
+    if let Some(cached) = cache.get(&pid) {
+        if cached.1.elapsed() <= ttl {
+            return cached.0;
+        }
+    }
+    let ppid = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix("PPid:").map(|v| v.trim().to_string()))
+                .and_then(|v| v.parse::<u32>().ok())
+        })
+        .unwrap_or(0);
+    if ppid == 0 {
+        cache.remove(&pid);
+    } else {
+        cache.insert(pid, (ppid, std::time::Instant::now()));
+    }
+    ppid
+}
+
 const _: () = assert!(core::mem::size_of::<PipeSample>() == 48);
 
 const SAMPLE_BYTES_CAP: usize = 256;
