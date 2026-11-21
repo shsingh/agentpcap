@@ -1,0 +1,27 @@
+---
+title: Contributing
+---
+
+The project welcomes contributions. The working agreement lives in
+[CONTRIBUTING.md](https://github.com/shsingh/agentpcap/blob/main/CONTRIBUTING.md);
+its core rules:
+
+- Branches only: one change per branch, merged by pull request.
+- Conventional Commits subjects; signed commits throughout.
+- One logical change per PR; the PR body links the `docs/spec.md`
+  sections it exercises through GitHub heading anchors.
+- **Harness before capability:** the failing test exists first; the PR
+  records the RED output verbatim.
+- The acceptance suite on every change: `cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, and the shared pre-commit
+  hook set.
+
+Security-sensitive surfaces — the read-only invariant, the event
+schema, the ledger chain, the data-minimization defaults, the eBPF
+capability set — carry extra review rules; see
+[CONTRIBUTING.md](https://github.com/shsingh/agentpcap/blob/main/CONTRIBUTING.md)
+and [SECURITY.md](security.qmd).
+
+Report defects the ordinary way in a
+[GitHub issue](https://github.com/shsingh/agentpcap/issues/new).
+Security issues follow the channels on the [security page](security.qmd).

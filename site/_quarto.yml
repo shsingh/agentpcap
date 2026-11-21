@@ -1,0 +1,44 @@
+project:
+  type: website
+
+website:
+  title: agentpcap
+  description: "A read-only, protocol-aware tap for agent tool calls: MCP and A2A sessions, one append-only per-host ledger, one static Rust binary."
+  site-url: https://agentpcap.kalatopi.sh/
+  repo-url: https://github.com/shsingh/agentpcap
+  repo-branch: main
+  repo-subdir: site
+  repo-actions: [edit, issue]
+  page-navigation: true
+  page-footer:
+    left: "© 2026 Shain Singh · [shain.singh@owasp.org](mailto:shain.singh@owasp.org) · PGP [9CB1781DC2BB28D37A0155DCAAF8226F3F4C1712](https://github.com/shsingh.gpg)"
+    right:
+      - text: PGP key
+        href: https://github.com/shsingh.gpg
+      - text: Security advisory
+        href: https://github.com/shsingh/agentpcap/security/advisories/new
+      - text: Governance
+        href: governance.qmd
+  navbar:
+    left:
+      - href: index.qmd
+        text: Intro
+      - href: design.qmd
+        text: Design
+      - href: governance.qmd
+        text: Governance
+    right:
+      - href: contributing.qmd
+        text: Contributing
+      - href: security.qmd
+        text: Security
+      - icon: github
+        href: https://github.com/shsingh/agentpcap
+        aria-label: "agentpcap repository"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    code-copy: true
