@@ -48,17 +48,20 @@ jobs:
       - name: Install the eBPF toolchain
         run: |
           rustup toolchain install nightly --component rust-src
-          sudo apt-get update -q
-          sudo apt-get install -yq llvm-19-dev clang-19 lld-19 libpolly-19-dev
+          # bpf-linker 0.13 needs LLVM >= 20 (LLVMParseIRInContext2 lives
+          # there, not in the distribution's llvm-19); the official apt
+          # script installs llvm-20-dev + clang + lld + libpolly
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo -E bash -s -- 20 all
           # exports apply to this same shell: cargo install needs them now
-          export PATH="/usr/lib/llvm-19/bin:$PATH"
-          export LLVM_PREFIX=/usr/lib/llvm-19
-          export LLVM_SYS_191_PREFIX=/usr/lib/llvm-19
+          export PATH="/usr/lib/llvm-20/bin:$PATH"
+          export LLVM_PREFIX=/usr/lib/llvm-20
+          export LLVM_SYS_221_PREFIX=/usr/lib/llvm-20
+          export LLVM_SYS_201_PREFIX=/usr/lib/llvm-20
           cargo install --locked bpf-linker
           # and ride the environment for the later build steps
-          echo "/usr/lib/llvm-19/bin" >> "$GITHUB_PATH"
-          echo "LLVM_PREFIX=/usr/lib/llvm-19" >> "$GITHUB_ENV"
-          echo "LLVM_SYS_191_PREFIX=/usr/lib/llvm-19" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "LLVM_PREFIX=/usr/lib/llvm-20" >> "$GITHUB_ENV"
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-20" >> "$GITHUB_ENV"
       - name: Build the eBPF probe (the CLI embeds it)
         run: |
           cargo +nightly build --manifest-path crates/agentpcap-ebpf/Cargo.toml \
