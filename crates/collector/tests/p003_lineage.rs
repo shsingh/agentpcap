@@ -132,6 +132,12 @@ fn p003_child_write_carries_the_parent_pid() {
         "p003 lineage map says child {child_pid} -> {:?}; expected {me}",
         parent_of_child
     );
+    // Also probe the inverse key: a swapped insert stores me -> child.
+    let parent_of_me = lineage.get(&me, 0);
+    eprintln!(
+        "p003 lineage map inverse: me {me} -> {:?}",
+        parent_of_me
+    );
     if !found {
         eprintln!("p003 samples seen ({}):", seen.len());
         for l in seen.iter().take(40) {
