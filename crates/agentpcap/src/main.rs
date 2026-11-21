@@ -292,14 +292,17 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
-    unsafe {
-        let ok = CANARY.get(SLOT_PUSH_OK, 0).unwrap_or(0);
-        let fail = CANARY.get(SLOT_PUSH_FAIL, 0).unwrap_or(0);
-        'let _ = std::fs::write(
-        format!("{}.push-receipt", ledger_path.display()),
-        format!("push_ok={ok} push_fail={fail}\n"),
-    );
-    eprintln!("agentpcap tap: push_ok={ok} push_fail={fail}");
+    // the push outcomes ride a receipt file beside the ledger: the
+    // test's tap stderr is discarded, the counters' answer is not
+    if let Some(m) = bpf.take_map("events") {
+        if let Ok(counters) = aya::maps::Array::<_, u64>::try_from(m) {
+            let ok = counters.get(&2u32, 0).unwrap_or(0);
+            let fail = counters.get(&3u32, 0).unwrap_or(0);
+            let _ = std::fs::write(
+                format!("{}.push-receipt", ledger_path.display()),
+                format!("push_ok={ok} push_fail={fail}\n"),
+            );
+        }
     }
     ExitCode::SUCCESS
 }
