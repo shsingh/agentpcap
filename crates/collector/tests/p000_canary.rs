@@ -57,4 +57,3 @@ fn p000_canary_loads_and_emits_in_vm() {
     drop(bpf);
     assert!(seen > 0, "no probe invocations counted within 3 s");
 }
-
