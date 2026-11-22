@@ -9,12 +9,17 @@ The live board carries the same set of cards:
 
 ## Current phase
 
-`2026.01-alpha1` gate evidence complete: the build-out shipped — the
-ledger, the conformance fixtures, the operator CLI, the tap runtime and
-the alpha1 scenario all closed ([the gate report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-alpha1.md)).
-The gate PR carries the release notes; the signed tag `2026.01-alpha1`
-and the attested build follow the merge. The wire class
-(2026.01-alpha2) starts next.
+`2026.01-alpha2` gate evidence complete: the wire class shipped — the
+socket collector, the TLS-boundary collector, session reassembly, the
+unidentified-flow events, `diff` and `export`, the systemd unit and the
+DaemonSet all landed ([the gate report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-alpha2.md),
+[the review-bot sweep](https://github.com/shsingh/agentpcap/pull/84)).
+The two named gaps ride open issues with their red receipts
+([#83](https://github.com/shsingh/agentpcap/issues/83),
+[#85](https://github.com/shsingh/agentpcap/issues/85)). The gate PR
+carries the release notes; the signed tag `2026.01-alpha2` and the
+attested build follow the merge. The evaluation gate (2026.01-rc1)
+starts next.
 
 ## Release gates
 
