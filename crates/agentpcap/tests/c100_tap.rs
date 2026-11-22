@@ -69,37 +69,47 @@ fn c100_tap_ledgers_the_classified_flow() {
         .expect("agentpcap binary");
     assert!(out.status.success(), "report must succeed");
     let text = String::from_utf8_lossy(&out.stdout);
-    let events: Vec<serde_json::Value> = text
+    let views: Vec<serde_json::Value> = text
         .lines()
         .map(|l| serde_json::from_str(l).expect("report lines are JSON objects"))
         .collect();
-    let summary: Vec<String> = events
-        .iter()
-        .map(|v| {
-            format!(
-                "verdict={} event={} pid={} peer={}",
-                v["verdict"].as_str().unwrap_or("?"),
-                v["event"].as_str().unwrap_or("?"),
-                v["pid"],
-                v["peer"]
-            )
-        })
-        .collect();
-    eprintln!("c100 ledger receipt ({}):", events.len());
-    for l in &summary {
-        eprintln!("  {l}");
+    eprintln!("c100 sessions receipt ({}):", views.len());
+    for v in &views {
+        eprintln!(
+            "  session={} invocations={} unidentified={}",
+            v["session_id"], v["invocations"], v["unidentified"]
+        );
     }
-    assert!(!events.is_empty(), "the ledger carries the flow");
+    assert!(!views.is_empty(), "the ledger carries the flow");
 
-    let mcp = events.iter().find(|v| v["verdict"].as_str() == Some("mcp"));
-    let mcp = mcp.expect("the MCP frame is classified");
-    assert_eq!(mcp["mode"].as_str().unwrap(), "attributed");
-    assert!(mcp["pid"].as_u64().unwrap() > 0);
-
-    let unid = events
+    // the scenario's session rides the raw ledger rows: this test's
+    // pid wrote the frames, and rows without that pid (the host's own
+    // pipe traffic) never select the assertions' row
+    let scenario_pid = u64::from(std::process::id());
+    let rec = std::fs::read_to_string(&ledger).expect("the ledger reads");
+    let mine: Vec<serde_json::Value> = rec
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|r| r["pid"].as_u64() == Some(scenario_pid))
+        .collect();
+    let own_session = mine
+        .first()
+        .and_then(|r| r["session_id"].as_str())
+        .map(String::from)
+        .expect("the scenario's session lands in the ledger");
+    let view = views
         .iter()
-        .find(|v| v["verdict"].as_str() == Some("agent-unidentified"));
-    assert!(unid.is_some(), "the methodless result is agent-unidentified");
+        .find(|v| v["session_id"].as_str() == Some(own_session.as_str()))
+        .expect("the scenario's session answers in the report");
+    assert_eq!(
+        view["invocations"].as_u64(),
+        Some(1),
+        "the tools-call frame counts as an invocation"
+    );
+    assert!(
+        view["unidentified"].as_u64().unwrap_or(0) >= 1,
+        "the methodless result rides agent-unidentified"
+    );
     // the live-file-write exclusion assert rides the alpha2 in-kernel fd
     // resolution (ADR-0004) - verified: the userspace /proc lookup cannot
     // name a channel for a writer whose pid view drifts on this host

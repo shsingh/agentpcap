@@ -1,7 +1,10 @@
 // The agentpcap operator CLI. Normative source: `docs/spec.md#9-operator-cli`.
 // `record` appends JSON Lines events from stdin to the ledger; `report`
-// prints the records and logs the read; `tap` runs the eBPF probe loop
-// and appends the reassembled session events. All faces fail closed.
+// renders the sessions view and logs the read; `export` streams the gate
+// stream; `diff` names the capability drift from two report sets; `tap`
+// runs the eBPF probe loop and appends the reassembled session events.
+// All faces fail closed: exit 0 on success, 2 on misuse, 1 on a capture
+// error.
 
 use agentpcap_collector::{classify_pipe_sample, resolve_parent, Decision, ParentCache};
 use agentpcap_events::{Event, Mode, Verdict};
@@ -14,6 +17,9 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+
+mod diff;
+mod report;
 
 // The probe object is a build artifact of the standalone eBPF crate;
 // the workspace build order produces it before this crate compiles.
@@ -130,6 +136,21 @@ fn main() -> ExitCode {
                 cgroup,
             )
         }
+        (Some("export"), Some(path)) => export(
+            PathBuf::from(path),
+            flag(&args[1..], "--follow", false).is_some(),
+        ),
+        (Some("diff"), Some(_)) => {
+            let before = flag(&args[1..], "--before", true);
+            let after = flag(&args[1..], "--after", true);
+            match (before, after) {
+                (Some(b), Some(a)) => diff(PathBuf::from(b), PathBuf::from(a)),
+                _ => {
+                    eprintln!("{USAGE}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -204,25 +225,18 @@ fn record(path: PathBuf, source: Option<String>) -> ExitCode {
 }
 
 fn report(path: PathBuf) -> ExitCode {
-    let reader = match LedgerReader::open(&path, "agentpcap.report") {
-        Ok(r) => r,
+    let view = match report::sessions(&path, "agentpcap.report") {
+        Ok(v) => v,
         Err(e) => {
+            // a broken ledger's read fails: report states the failure
+            // on stderr and answers nothing on stdout
             eprintln!("agentpcap report: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    for rec in reader.records() {
-        let line = serde_json::to_string(rec).unwrap_or_default();
-        if writeln!(out, "{line}").is_err() {
-            return ExitCode::FAILURE;
-        }
-    }
-    if out.flush().is_err() {
+    if print_sessions(view).is_err() {
         return ExitCode::FAILURE;
     }
-    eprintln!("agentpcap report: {} record(s)", reader.len());
     ExitCode::SUCCESS
 }
 
@@ -242,7 +256,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
         libc::signal(libc::SIGTERM, on_stop as *const () as usize);
         libc::signal(libc::SIGINT, on_stop as *const () as usize);
     }
-    let mut bpf = match aya::Bpf::load(BPF_OBJ) {
+    let mut bpf = match aya::Ebpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("agentpcap tap: probe load failed: {e}");
@@ -512,9 +526,8 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
             let machine_pid = machine_pid as u32;
             let payload_bytes =
                 &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
-            match classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) {
-                Decision::Other => continue,
-                _ => (),
+            if classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) == Decision::Other {
+                continue;
             }
             // The channel face, per class. The pipe class: the write's
             // fd must name a pipe; the pipe inode is the channel's pair
@@ -705,7 +718,7 @@ fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
                 }
             }
         })
-        .and_then(|p| if p == "skipped" { None } else { Some(p) })
+        .filter(|p| p != "skipped")
 }
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).
@@ -731,4 +744,210 @@ fn random_token() -> Result<String, std::io::Error> {
         }
     }
     Err(last.unwrap())
+}
+
+fn print_sessions(view: Vec<Value>) -> std::io::Result<()> {
+    report::print_sessions(view)
+}
+
+/// The gate stream: the ledger's events to stdout as JSON Lines, in
+/// lossless order; `--follow` keeps streaming the appends after the
+/// existing segment. The read logs as agentpcap.export. The stream
+/// carries the ledger's ORIGINAL line bytes: a consumer re-verifying
+/// the chain hashes the same bytes the recorder shipped — a
+/// re-serialization would change a line's bytes and break the next
+/// record's `prev` hash against it.
+fn export(path: PathBuf, follow: bool) -> ExitCode {
+    // the chain verification and the access log ride the reader open
+    if let Err(e) = LedgerReader::open(&path, "agentpcap.export") {
+        eprintln!("agentpcap export: {e}");
+        return ExitCode::FAILURE;
+    }
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    // The initial position rides ONE read from byte zero: the complete
+    // lines stream now and `pos` answers from the same bytes — an
+    // append that lands while the dump drains never slips between a
+    // records() call and a later metadata read.
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("agentpcap export: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut buf = Vec::new();
+    use std::io::Read as _;
+    if f.read_to_end(&mut buf).is_err() {
+        return ExitCode::FAILURE;
+    }
+    drop(f);
+    let mut pos = match stream_complete(&mut out, &buf, true) {
+        Ok(n) => n,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            eprintln!("agentpcap export: a ledger line is not valid JSON");
+            return ExitCode::FAILURE;
+        }
+        Err(_) => return ExitCode::FAILURE,
+    };
+    if out.flush().is_err() {
+        return ExitCode::FAILURE;
+    }
+    if !follow {
+        return ExitCode::SUCCESS;
+    }
+    // the follow: a position face — the file reads from the last
+    // offset, only complete lines stream, and an unfinished tail waits
+    // for its newline. The access log logs once, at the open above;
+    // the idle polls parse nothing. File identity rides the inode: a
+    // ledger rotation renames the closed segment and opens a fresh
+    // file, and the gate stream drains the closed segment's tail from
+    // the old position before the fresh segment streams from zero.
+    let mut ino = std::fs::metadata(&path)
+        .map(|m| std::os::unix::fs::MetadataExt::ino(&m))
+        .unwrap_or(0);
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return ExitCode::FAILURE;
+        };
+        let cur_ino = std::os::unix::fs::MetadataExt::ino(&meta);
+        let len = meta.len();
+        if cur_ino != ino {
+            // the ledger rotated: the closed segment's tail drains
+            // from the segment file, then the fresh one starts at zero
+            let closed = PathBuf::from(format!("{}.1", path.display()));
+            match std::fs::read(&closed) {
+                Ok(tail) => {
+                    if (tail.len() as u64) > pos {
+                        if let Err(e) = stream_complete(&mut out, &tail[pos as usize..], false) {
+                            match e.kind() {
+                                // the consumer closed the stream mid-drain:
+                                // a clean end on either shutdown face
+                                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::WriteZero => {
+                                    return ExitCode::SUCCESS
+                                }
+                                _ => return ExitCode::FAILURE,
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("agentpcap export: the closed segment read failed: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            let _ = out.flush();
+            pos = 0;
+            ino = cur_ino;
+            continue;
+        }
+        if len <= pos {
+            continue;
+        }
+        let Ok(mut f) = std::fs::File::open(&path) else {
+            return ExitCode::FAILURE;
+        };
+        use std::io::Seek;
+        if f.seek(std::io::SeekFrom::Start(pos)).is_err() {
+            return ExitCode::FAILURE;
+        }
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).is_err() {
+            return ExitCode::FAILURE;
+        }
+        match stream_complete(&mut out, &buf, true) {
+            Ok(n) => {
+                pos += n;
+                let _ = out.flush();
+            }
+            Err(e) => match e.kind() {
+                // the consumer closed the stream: a clean end. SIGPIPE
+                // on a closed gate lands as BrokenPipe on write_all; a
+                // permanently clogged pipe lands as WriteZero. Both
+                // are ordinary shutdown faces, never a failed export
+                std::io::ErrorKind::BrokenPipe => return ExitCode::SUCCESS,
+                std::io::ErrorKind::WriteZero => return ExitCode::SUCCESS,
+                std::io::ErrorKind::InvalidData => {
+                    // a complete malformed line never streams: fail-closed
+                    eprintln!("agentpcap export: an appended line is not valid JSON");
+                    return ExitCode::FAILURE;
+                }
+                _ => return ExitCode::FAILURE,
+            },
+        }
+    }
+}
+
+/// Stream `buf`'s complete lines verbatim (each byte rides); the
+/// return value is the consumed byte count — the trailing partial tail
+/// waits for its newline. A complete malformed line never streams.
+/// With `lenient_tail` unset, any trailing garbage is fatal.
+fn stream_complete(
+    out: &mut std::io::StdoutLock,
+    buf: &[u8],
+    lenient_tail: bool,
+) -> std::io::Result<u64> {
+    let mut consumed = 0u64;
+    let mut start = 0usize;
+    let mut complete_end = buf.len();
+    if !buf.ends_with(b"\n") {
+        match buf.iter().rposition(|b| *b == b'\n') {
+            Some(i) => complete_end = i + 1,
+            // nothing complete arrived; the tail waits (or is fatal
+            // for a closed read)
+            None => {
+                if lenient_tail && !buf.is_empty() {
+                    eprintln!("agentpcap export: the tail waits for its newline");
+                    return Ok(0);
+                }
+                if !std::str::from_utf8(buf).map(|s| s.trim().is_empty()).unwrap_or(false) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "the tail has no newline",
+                    ));
+                }
+                return Ok(0);
+            }
+        }
+    }
+    for i in 0..complete_end {
+        if buf[i] == b'\n' {
+            let line = &buf[start..i];
+            if serde_json::from_slice::<Value>(line).is_err() {
+                eprintln!(
+                    "agentpcap export: the line is not valid JSON: {}",
+                    String::from_utf8_lossy(line)
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the line is not valid JSON",
+                ));
+            }
+            out.write_all(line)?;
+            out.write_all(b"\n")?;
+            consumed = (i + 1) as u64;
+            start = i + 1;
+        }
+    }
+    Ok(consumed)
+}
+
+fn diff(before: PathBuf, after: PathBuf) -> ExitCode {
+    let events = match diff::drift(&before, &after) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("agentpcap diff: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for e in &events {
+        if serde_json::to_writer(&mut out, e).is_err() || writeln!(out).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
+    let _ = out.flush();
+    ExitCode::SUCCESS
 }

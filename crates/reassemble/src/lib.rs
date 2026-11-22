@@ -345,7 +345,7 @@ impl Reassembler {
             .iter()
             .filter(|(k, s)| {
                 k.starts_with("pipe-pair:")
-                    && s.channels.iter().any(|c| *c == p.peer)
+                    && s.channels.contains(&p.peer)
             })
             .map(|(k, _)| k.clone())
             .collect::<Vec<_>>();
@@ -377,7 +377,7 @@ impl Reassembler {
             let Some(mut bucket) = self.pending.remove(&k) else {
                 continue;
             };
-            for ((_, mut parked)) in bucket.by_id.drain() {
+            for (_, mut parked) in bucket.by_id.drain() {
                 for p in parked.drain(..) {
                     out.push(self.emit_loss(&p));
                 }
@@ -399,7 +399,6 @@ impl Reassembler {
         } else {
             frame.peer.clone()
         };
-        let bucket_key = key.clone();
         let pending_local = frame
             .tap_evidence
             .iter()
@@ -487,7 +486,7 @@ impl Reassembler {
         let joined = if is_channel_face(&frame.peer) {
             self.sessions
                 .iter()
-                .filter(|(_, s)| s.channels.iter().any(|c| *c == frame.peer))
+                .filter(|(_, s)| s.channels.contains(&frame.peer))
                 .filter(|(k, _)| !k.starts_with("client:"))
                 .map(|(k, _)| k.clone())
                 .collect::<Vec<_>>()
@@ -707,12 +706,12 @@ impl Reassembler {
                 let bucket_key: Option<String> = self
                     .pending
                     .iter()
-                    .find(|(_, b)| b.by_id.get(&id).map_or(false, |v| !v.is_empty()))
+                    .find(|(_, b)| b.by_id.get(&id).is_some_and(|v| !v.is_empty()))
                     .map(|(k, _)| k.clone());
                 if let Some(bucket_key) = bucket_key {
                     if let Some(b) = self.pending.get_mut(&bucket_key) {
                         let mut consumed = false;
-                        let mut consumed_pair: Option<String> = None;
+                        let consumed_pair: Option<String>;
                         if let Some(v) = b.by_id.get_mut(&id) {
                             if v.len() == 1 {
                                 let p = v.remove(0);
@@ -729,9 +728,7 @@ impl Reassembler {
                                         .iter()
                                         .filter(|(k, s)| {
                                             k.starts_with("pipe-pair:")
-                                                && s.channels
-                                                    .iter()
-                                                    .any(|c| *c == p.peer)
+                                                && s.channels.contains(&p.peer)
                                         })
                                         .map(|(k, _)| k.clone())
                                         .collect();

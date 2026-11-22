@@ -99,7 +99,6 @@ pub(crate) fn chain_of(lines: &[&str]) -> Result<(), LedgerError> {
             if !got.is_empty() && !valid_carry {
                 return Err(LedgerError::ChainBreak(0));
             }
-            expected = got;
         } else if got != expected {
             return Err(LedgerError::ChainBreak(i));
         }
@@ -177,7 +176,7 @@ impl DedupWindow {
 
     fn retain_last(&mut self, keys: Vec<String>) {
         let start = keys.len().saturating_sub(self.budget);
-        for k in keys[start..].to_vec() {
+        for k in keys[start..].iter().cloned() {
             self.insert(k);
         }
     }
@@ -301,10 +300,14 @@ impl LedgerWriter {
         obj.entry("schema_version")
             .or_insert_with(|| Value::String(SCHEMA_VERSION.into()));
         let body = serde_json::to_string(&line).map_err(|_| LedgerError::Format(self.count))?;
-        self.file.write_all(body.as_bytes())?;
-        self.file.write_all(b"\n")?;
+        let prev_face = trunc(&body);
+        // one write call: a concurrent reader (the export follow) never
+        // sees a half-written record between the body and the newline
+        let mut line_bytes = body.into_bytes();
+        line_bytes.push(b'\n');
+        self.file.write_all(&line_bytes)?;
         self.file.flush()?;
-        self.prev = trunc(&body);
+        self.prev = prev_face;
         self.count += 1;
         if let Some(k) = dedup_key {
             self.seen_dedup.insert(k);
