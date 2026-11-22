@@ -50,7 +50,7 @@ pub fn verdict_case(paths: &[String]) -> &'static str {
     for seg in &parsed {
         for rec in seg {
             if rec["schema_version"].as_str().is_none_or(|v| {
-                !matches!(v, "1.0" | "2.0")
+                !matches!(v, "1.0" | "2.0" | "2.1")
             }) {
                 return "schema-mismatch";
             }

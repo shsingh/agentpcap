@@ -17,11 +17,19 @@ User=agentpcap
 Group=agentpcap
 # the binary path: the release's install face (the maintainer adjusts
 # the prefix at package time)
-ExecStart=/usr/local/bin/agentpcap tap --ledger /var/lib/agentpcap/ledger.jsonl
+ExecStart=/usr/local/bin/agentpcap tap --ledger /var/lib/agentpcap/ledger.jsonl --duration 0
+# the privacy face: the state directory and the ledger ride
+# owner-only - captured payloads never become world-readable
 StateDirectory=agentpcap
+StateDirectoryMode=0700
+UMask=0077
 # the capability set: documented in deploy/README.md, nothing else
-AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_DAC_READ_SEARCH
+# CAP_SYS_PTRACE rides the set: Yama's ptrace scope only grants a
+# CAP_SYS_PTRACE holder the read of another user's live /proc/<pid>/fd
+# link - without it every foreign-user writer resolves `unresolved`
+# (deploy/README.md states the justification)
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 # the service carries no telemetry of its own
 NoNewPrivileges=on
 ProtectSystem=strict

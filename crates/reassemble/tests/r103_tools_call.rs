@@ -41,5 +41,5 @@ fn r103_the_tools_call_record_carries_the_tool_name_and_result() {
         ev.payload.as_ref().unwrap()["result"]["content"][0]["text"],
         json!("hello-from-read")
     );
-    assert_eq!(ev.dedup, "stdio-pipe:pipe-pair:3001:4002:tools-call:3");
+    assert!(ev.dedup.starts_with("stdio-pipe:pipe-pair:3001:4002:tools-call:3@"));
 }

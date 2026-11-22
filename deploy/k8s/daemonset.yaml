@@ -40,6 +40,19 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       tolerations:
         - operator: Exists
+      initContainers:
+        # the owner face: DirectoryOrCreate makes the node ledger
+        # root-owned; the init container hands it to the tap's UID
+        # before the tap writes
+        - name: ledger-owner
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /var/lib/agentpcap && chown -R 65534:65534 /var/lib/agentpcap"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          volumeMounts:
+            - name: ledger
+              mountPath: /var/lib/agentpcap
       containers:
         - name: tap
           image: ghcr.io/shsingh/agentpcap:latest
@@ -48,19 +61,37 @@ spec:
             - tap
             - --ledger
             - /var/lib/agentpcap/ledger.jsonl
+            # the service face: the capture runs until the pod stops
+            - --duration
+            - "0"
+          env:
+            # calibration writes its pid-space file under /tmp, which
+            # the emptyDir volume below provides
+            - name: TMPDIR
+              value: /tmp
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
             # the capability set: documented in deploy/README.md,
-            # nothing beyond it
+            # nothing beyond it — the runtime's defaults drop first
             capabilities:
+              drop:
+                - ALL
               add:
                 - BPF
                 - PERFMON
+                # the /proc fd face of other users: Yama's ptrace scope
+                # only grants a CAP_SYS_PTRACE holder the read of
+                # live /proc/<pid>/fd links across the ownership
+                # boundary (deploy/README.md)
+                - SYS_PTRACE
                 - DAC_READ_SEARCH
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
           volumeMounts:
+            # calibration's writable directory: the emptyDir backs /tmp
+            - name: tmp
+              mountPath: /tmp
             # the node's /proc face: the tap resolves writer fds
             - name: proc
               mountPath: /host/proc
@@ -71,6 +102,12 @@ spec:
             - name: sys
               mountPath: /host/sys
               readOnly: true
+            # the tracepoint face: the probe's attach reads the
+            # tracepoint ids under /sys/kernel/tracing - the host's
+            # tracefs mounts at the path the reader expects
+            - name: tracefs
+              mountPath: /sys/kernel/tracing
+              readOnly: true
             # the node ledger: the hostPath the consumer aggregates
             - name: ledger
               mountPath: /var/lib/agentpcap
@@ -80,6 +117,9 @@ spec:
             requests:
               memory: 128Mi
       volumes:
+        # calibration's writable /tmp on the read-only root filesystem
+        - name: tmp
+          emptyDir: {}
         - name: proc
           hostPath:
             path: /proc
@@ -87,6 +127,10 @@ spec:
         - name: sys
           hostPath:
             path: /sys
+            type: Directory
+        - name: tracefs
+          hostPath:
+            path: /sys/kernel/tracing
             type: Directory
         - name: ledger
           hostPath:

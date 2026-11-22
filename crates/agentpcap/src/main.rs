@@ -22,7 +22,7 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]\n       (--duration 0 runs the capture unbounded)";
 
 /// The flag walker: `--flag <value>` pairs and standalone `--flag`
 /// switches. Misuse is the caller's exit-2 face.
@@ -39,8 +39,27 @@ fn flag(args: &[String], name: &str, takes_value: bool) -> Option<String> {
     None
 }
 
+/// The stop face: the signal handler marks the stop; the tap loop
+/// breaks and the drain flushes the still-pending requests.
+static STOP_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_stop(_sig: i32) {
+    STOP_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // a trailing `--source` is misuse, not an omitted flag: the value
+    // face distinguishes an absent switch from a missing value (exit
+    // 2, before the ledger opens)
+    if args.contains(&"--source".to_string())
+        && args.get(args.iter().position(|a| a == "--source").unwrap() + 1)
+            .is_none()
+    {
+        eprintln!("agentpcap: --source needs a value");
+        return ExitCode::from(2);
+    }
     match (args.first().map(String::as_str), args.get(2)) {
         (Some("record"), Some(path)) => record(
             PathBuf::from(path),
@@ -60,6 +79,18 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The FNV-1a hash over bytes: the tap's dedupe keys ride the sample
+/// content, not the per-run counter — a restarted capture re-mints
+/// nothing from an earlier run.
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 fn record(path: PathBuf, source: Option<String>) -> ExitCode {
@@ -143,6 +174,18 @@ fn report(path: PathBuf) -> ExitCode {
 /// ledger. The classified frames feed the reassembler; the reassembled
 /// session events land in the ledger one per session event.
 fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
+    // `--duration 0` is the service face: the capture runs unbounded
+    // until the unit stops it. The default face stays the 60-second
+    // window the alpha1 CLI promised.
+    let unbounded = duration_secs == 0;
+    // the stop face: the unit's SIGTERM (and Ctrl-C) marks the stop.
+    // The loop breaks and the drain flushes every still-pending
+    // request with the no-response face — a stop loses nothing.
+    STOP_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        libc::signal(libc::SIGTERM, on_stop as *const () as usize);
+        libc::signal(libc::SIGINT, on_stop as *const () as usize);
+    }
     let mut bpf = match aya::Bpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
@@ -248,9 +291,24 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         .unwrap_or_default();
     let mut reassembler = Reassembler::new(host.clone(), Mode::Attributed, "tap".into());
     let mut seq: u64 = 0;
-    let deadline = Instant::now() + Duration::from_secs(duration_secs);
+    let start = Instant::now();
+    let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
-    while Instant::now() < deadline {
+    while !expired() && !STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // the idle face: the sweep expires stale parked requests (they
+        // ride the no-response face once) and idle sessions - the
+        // deployed service never grows its in-memory faces without
+        // limit
+        for ev in reassembler.sweep() {
+            if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
+                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                    eprintln!("agentpcap tap: the dedupe skipped the sweep event: its session event already rides the ledger");
+                } else {
+                    eprintln!("agentpcap tap: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         match queue.pop(0) {
             Ok(s) => {
                 seq += 1;
@@ -351,6 +409,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             if let Err(e) =
                                 writer.append(&serde_json::to_value(&ev).unwrap())
                             {
+                                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                                    eprintln!("agentpcap tap: the dedupe skipped the event: its session event already rides the ledger");
+                                    continue;
+                                }
                                 eprintln!("agentpcap tap: {e}");
                                 return ExitCode::FAILURE;
                             }
@@ -372,15 +434,25 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             protocol_version: None,
                             session_id: None,
                             peer: resolved.clone(),
-                            dedup: format!("{resolved}:{seq}"),
+                            dedup: format!(
+                                "{resolved}:t:{:016x}",
+                                fnv64(payload_bytes)
+                            ),
                             payload: None,
                             evidence: Some(evidence),
                             source: "tap".into(),
                             schema_version: "1.0".into(),
                         };
                         if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
-                            eprintln!("agentpcap tap: {e}");
-                            return ExitCode::FAILURE;
+                            if matches!(
+                                e,
+                                agentpcap_ledger::LedgerError::Duplicate(_)
+                            ) {
+                                eprintln!("agentpcap tap: the dedupe skipped the event: its session event already rides the ledger");
+                            } else {
+                                eprintln!("agentpcap tap: {e}");
+                                return ExitCode::FAILURE;
+                            }
                         }
                     }
                 }
@@ -393,8 +465,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     // silently drops it
     for ev in reassembler.flush() {
         if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
-            eprintln!("agentpcap tap: {e}");
-            return ExitCode::FAILURE;
+            if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                eprintln!("agentpcap tap: the dedupe skipped the flush event: its session event already rides the ledger");
+            } else {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
