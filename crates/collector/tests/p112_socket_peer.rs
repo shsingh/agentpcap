@@ -23,11 +23,12 @@ fn p112_the_socket_fd_resolves_to_the_canonical_pair() {
     client.write_all(b"ping").expect("the client sends");
 
     // the client's own fd resolves: its peer pair matches the server face
+    // (the namespace face rides the key: `net-<inode>.tcp:...`)
     let client_pid = std::process::id();
     let mut peers = Vec::new();
     // walk the test's own fds: the connected socket lives on some fd
     for fd in 3..64 {
-        if let Some(p) = resolve_socket_peer(client_pid, fd) {
+        if let Some(p) = resolve_socket_peer(client_pid, fd).map(|fp| fp.peer) {
             peers.push(p);
         }
     }

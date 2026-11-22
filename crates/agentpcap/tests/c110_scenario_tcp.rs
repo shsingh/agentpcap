@@ -59,6 +59,11 @@ fn c110_the_tcp_scenario_answers_the_ledger() {
 
     // the test is the MCP client: two framed requests over TCP
     let mut client = TcpStream::connect(addr).expect("the client connects");
+    let client_port = client
+        .local_addr()
+        .expect("the client face")
+        .port()
+        .to_string();
     let frames = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}"#,
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch","arguments":{"url":"https://lab"}}}"#,
@@ -78,16 +83,24 @@ fn c110_the_tcp_scenario_answers_the_ledger() {
         .lines()
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
-    let own = std::process::id() as u64;
     // the socket class rides the tcp transport with the canonical
     // five-tuple face. The server's BufReader reads deliver more than
     // one frame per kernel read: the sample cuts at the 256-byte cap
     // and the cut rides the ledger honestly as `unidentified`
-    // (a first-class record with the truncation face), while the
-    // client's own writes bind their pairs.
+    // (a first-class record with the truncation face). The merged
+    // session events bind on the response's face: the client's port
+    // rides their remote-end face (the direction fix).
+    // the fixture's own connection: the client's port rides the peer
+    // face (another JSON-RPC connection during the window never
+    // breaks the face checks)
     let mine: Vec<&serde_json::Value> = recs
         .iter()
-        .filter(|r| r["pid"].as_u64() == Some(own) && r["transport"] == "tcp")
+        .filter(|r| {
+            r["transport"] == "tcp"
+                && r["peer"]
+                    .as_str()
+                    .is_some_and(|peer| peer.contains(&client_port))
+        })
         .collect();
     eprintln!(
         "c110 ledger receipt: records={} tcp={} events={:?} peers={:?}",
@@ -96,7 +109,21 @@ fn c110_the_tcp_scenario_answers_the_ledger() {
         mine.iter().map(|r| r["event"].as_str()).collect::<Vec<_>>(),
         mine.iter().map(|r| format!("{}", r["peer"])).collect::<Vec<_>>()
     );
-    assert!(mine.len() >= 2, "the client's session events ride the ledger");
+    assert!(mine.len() >= 2, "the merged session events ride the ledger");
+    let client_side_rides = mine.iter().any(|r| {
+        r["evidence"]
+            .as_array()
+            .map(|arr| {
+                arr.iter().any(|e| {
+                    e.as_str().is_some_and(|face| face.contains(&client_port))
+                })
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        client_side_rides,
+        "the client's direction face rides the merged events: {client_port}"
+    );
     let mine = mine
         .iter()
         .filter(|r| r["session_id"].is_string())
@@ -112,7 +139,11 @@ fn c110_the_tcp_scenario_answers_the_ledger() {
         assert!(
             evidence
                 .iter()
-                .any(|e| e.as_str().map(|x| x.starts_with("peer-face:tcp:")) == Some(true)),
+                .any(|e| {
+                    e.as_str().map(|x| {
+                        x.starts_with("peer-face:net-") && x.contains(".tcp:")
+                    }) == Some(true)
+                }),
             "the canonical five-tuple face rides"
         );
         assert_eq!(

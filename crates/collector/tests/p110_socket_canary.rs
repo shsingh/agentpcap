@@ -1,9 +1,9 @@
 // P110 — the socket canary: the socket object builds, loads, attaches
-// `sys_enter_sendto` on the build-VM kernel, and the socket canary's
-// invoke counter reads back greater than in-process after the test
-// writes a JSON-RPC line over a loopback TCP socket.
+// the send face pair (`sys_enter_sendto` parks, `sys_exit_sendto`
+// captures) on the build-VM kernel, and the exit face's invoke counter
+// reads back greater than in-process after the test writes a JSON-RPC
+// line over a loopback TCP socket.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
-// Kernel notes live in the orbstack-build-vms skill receipt trail.
 
 use agentpcap_collector::PipeSample;
 use std::io::{Read, Write};
@@ -29,6 +29,15 @@ fn p110_the_socket_probe_loads_fires_and_counts() {
     prog.load().expect("bpf verifier rejected the socket program");
     prog.attach("syscalls", "sys_enter_sendto")
         .expect("attach to sys_enter_sendto failed");
+    let prog_exit: &mut aya::programs::TracePoint = bpf
+        .program_mut("agentpcap_send_exit")
+        .expect("the send exit program missing from object")
+        .try_into()
+        .expect("agentpcap_send_exit is not a tracepoint");
+    prog_exit.load().expect("bpf verifier rejected the send exit program");
+    prog_exit
+        .attach("syscalls", "sys_exit_sendto")
+        .expect("attach to sys_exit_sendto failed");
 
     // the canary counts outcomes: invoke at 0, push-ok at 2
     let mut canary: aya::maps::Array<_, u64> = bpf

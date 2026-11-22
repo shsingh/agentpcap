@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  dev.agentpcap.plist - the workstation review build's launchd template.
+  Spec: docs/spec.md#10-deployment. The eBPF collectors are Linux-only;
+  the launchd face serves the review subcommands (record, report,
+  export, diff) on the workstation and carries the operator's own
+  ledger path. The template is a document the workstation review build
+  adjusts; it is not a service that captures traffic on macOS.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.agentpcap</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/agentpcap</string>
+        <string>record</string>
+        <string>--ledger</string>
+        <string>/Users/OPERATOR/Library/Application Support/agentpcap/ledger.jsonl</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/agentpcap.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agentpcap.err</string>
+</dict>
+</plist>
