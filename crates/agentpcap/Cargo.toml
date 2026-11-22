@@ -11,6 +11,7 @@ agentpcap-events = { path = "../events" }
 agentpcap-ledger = { path = "../ledger" }
 agentpcap-reassemble = { path = "../reassemble" }
 aya = "0.13"
+libc = "0.2"
 serde_json = "1"
 tempfile = "=3.27.0"
 

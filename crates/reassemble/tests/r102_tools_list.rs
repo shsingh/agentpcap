@@ -36,7 +36,7 @@ fn r102_the_tools_list_result_names_its_tools() {
     let ev = &out[0];
     assert_eq!(ev.event, "tools-list");
     assert_eq!(ev.verdict, Verdict::Mcp);
-    assert_eq!(ev.dedup, "stdio-pipe:pipe-pair:3001:4002:tools-list:2");
+    assert!(ev.dedup.starts_with("stdio-pipe:pipe-pair:3001:4002:tools-list:2@"));
     let evidence = ev.evidence.as_ref().unwrap().clone();
     assert!(evidence.contains(&"tools:2".to_string()), "evidence: {evidence:?}");
     assert!(evidence.contains(&"tool:read".to_string()) && evidence.contains(&"tool:write".to_string()));

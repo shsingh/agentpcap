@@ -41,6 +41,15 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
     prog.load().expect("bpf verifier rejected");
     prog.attach("syscalls", "sys_enter_sendto")
         .expect("the attach failed");
+    let prog_exit: &mut aya::programs::TracePoint = bpf
+        .program_mut("agentpcap_send_exit")
+        .expect("the send exit program missing from object")
+        .try_into()
+        .expect("agentpcap_send_exit is not a tracepoint");
+    prog_exit.load().expect("bpf verifier rejected the send exit program");
+    prog_exit
+        .attach("syscalls", "sys_exit_sendto")
+        .expect("attach to sys_exit_sendto failed");
     let mut allow: aya::maps::HashMap<_, u64, u32> = bpf
         .take_map("cgroup_allow")
         .expect("cgroup_allow map missing")

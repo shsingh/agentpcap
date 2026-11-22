@@ -17,8 +17,8 @@ fn l101_fixtures_answer_their_expectations() {
     let results = conformance::run(&dir).expect("fixture walk");
     assert_eq!(
         results.len(),
-        5,
-        "the fixture set carries five cases plus expectations"
+        6,
+        "the fixture set carries six cases plus expectations"
     );
     for r in &results {
         assert_eq!(

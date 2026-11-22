@@ -1,0 +1,11 @@
+# The cluster image: the identical binary per node, built from the
+# release's artifacts (the release workflow's attested assets are the
+# build inputs). `distroless/cc` ships the glibc loader and libgcc the
+# release binary links dynamically; a static (musl) release build is
+# the post-gate lane. The capability set is documented in
+# deploy/README.md.
+FROM gcr.io/distroless/cc-debian12:nonroot
+# the maintainer copies the attested release binary at build time
+COPY --chown=65534:65534 agentpcap /usr/local/bin/agentpcap
+USER 65534
+ENTRYPOINT ["/usr/local/bin/agentpcap"]
