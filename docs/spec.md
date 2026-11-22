@@ -109,7 +109,7 @@ The event record is the project's interface contract; both deployment topologies
 | host | string | MUST | Stable host or node identity. |
 | process | string | MUST | Executable name plus lineage hash. |
 | pid | integer | MUST | Observed process id. |
-| transport | string | MUST | `stdio-pipe`, `tcp`, `udp`, `quic`. |
+| transport | string | MUST | `stdio-pipe`, `tcp`, `udp`, `quic`, `socket-unresolved`. The `socket-unresolved` face names a socket observation whose connection face closed before the resolver ran; it carries the `fd-unresolved-at-pop` evidence. |
 | mode | string | MUST | `opaque` or `attributed`; per Section 8. |
 | verdict | string | MUST | `mcp`, `a2a`, `agent-unidentified`, `other` (Section 6). |
 | event | string | MUST | `init`, `tools-list`, `tools-call`, `notify`, `a2a-handoff`, `unidentified`, `other`. |
