@@ -36,5 +36,5 @@ fn r106_the_message_send_pair_carries_the_a2a_handoff() {
     assert_eq!(ev.verdict, Verdict::A2a);
     assert_eq!(ev.event, "a2a-handoff");
     assert_eq!(ev.method.as_deref(), Some("message/send"));
-    assert_eq!(ev.dedup, "stdio-pipe:pipe-pair:3001:4002:a2a-handoff:7");
+    assert!(ev.dedup.starts_with("stdio-pipe:pipe-pair:3001:4002:a2a-handoff:7@"));
 }

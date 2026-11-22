@@ -1,5 +1,5 @@
 // R113 — the schema face and the flush time face (ADR-0007): the
-// reassembled records carry schema_version 2.0, and the flush face
+// reassembled records carry schema_version 2.1, and the flush face
 // stamps the request's observation time, never the capture window's
 // end. Spec: docs/spec.md#4-event-record-schema.
 
@@ -25,17 +25,17 @@ fn dying(mut frame: Frame) -> Frame {
 }
 
 #[test]
-fn r113_the_session_face_carries_2_0_and_the_flush_rides_the_observation_time() {
+fn r113_the_session_face_carries_2_1_and_the_flush_rides_the_observation_time() {
     let mut r = Reassembler::new("lab-host".into(), Mode::Attributed, "tap".into());
-    // a bound pair: the merged record carries the 2.0 face
+    // a bound pair: the merged record carries the 2.1 face
     let req = json!({"jsonrpc": "2.0", "id": 41, "method": "tools/list", "params": {}});
     let resp = json!({"jsonrpc": "2.0", "id": 41, "result": {"tools": []}});
     assert!(r.feed(frame("pipe:100", 700, 100, req)).is_empty());
     let bound = r.feed(frame("pipe:101", 4002, 700, resp));
     assert_eq!(bound.len(), 1);
     assert_eq!(
-        bound[0].schema_version, "2.0",
-        "the session-event face carries the 2.0 version"
+        bound[0].schema_version, "2.1",
+        "the session-event face carries the 2.1 version"
     );
     // a lost request parks long before the flush: its flush record
     // stamps the observation time, not the window's end - the strict
@@ -49,8 +49,8 @@ fn r113_the_session_face_carries_2_0_and_the_flush_rides_the_observation_time() 
     assert_eq!(flushed.len(), 1);
     let ev = &flushed[0];
     assert_eq!(
-        ev.schema_version, "2.0",
-        "the flush face carries the 2.0 version"
+        ev.schema_version, "2.1",
+        "the flush face carries the 2.1 version"
     );
     assert!(
         ev.ts < flush_moment,
