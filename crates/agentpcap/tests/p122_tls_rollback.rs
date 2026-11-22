@@ -48,7 +48,6 @@ fn p122_the_failed_read_attach_undoes_the_write_links() {
         .spawn()
         .expect("sink spawn");
     let mut f = sink.stdin.take().unwrap();
-    let _ = sink.wait();
     use std::io::Write;
     writeln!(
         f,
@@ -57,6 +56,9 @@ fn p122_the_failed_read_attach_undoes_the_write_links() {
     .unwrap();
     let _ = f.flush();
     drop(f);
+    // the child's input pipe closes BEFORE the wait: `cat` exits on
+    // EOF, so the wait never races its own stdin
+    let _ = sink.wait();
 
     let st = tap.wait().expect("tap exits at its deadline");
     let _ = tap;

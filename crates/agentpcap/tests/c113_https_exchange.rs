@@ -142,14 +142,30 @@ fn c113_the_https_framed_call_answers_the_ledger() {
     // the REPLY face: the server answers id 1 with the matching tool
     // result, and the merged payload carries the content — the response
     // capture faces the ledger when the pair binds
-    if let Some(text) = call["payload"]["result"]["content"][0]["text"].as_str() {
-        assert_eq!(text, "tls-hello", "the framed reply rides the merged record");
-        eprintln!("c113 receipt: reply content tls-hello rides the ledger");
-    } else {
-        // the honest race fallback (ADR-0004): the pair keyed
-        // unresolved on the dev-VM pid-space face; the request face
-        // proves the framing capture, the reply face rides c111
-        eprintln!("c113 note: the reply rides the race fallback (ADR-0004); the request face landed");
-    }
+        // the reply content assert TIES to the chunked-join face: the
+        // chunked reply reached the ledger as boundary evidence — the
+        // assert holds on every run, the merge face rides c111
+        let joined = recs
+            .iter()
+            .any(|r| {
+                r["evidence"]
+                    .as_array()
+                    .map(|e| e.iter().any(|x| x == "chunked-join"))
+                    .unwrap_or(false)
+            });
+        assert!(
+            joined,
+            "the chunked reply's chunked-join evidence rides this run's ledger"
+        );
+        if let Some(text) = call["payload"]["result"]["content"][0]["text"].as_str() {
+            assert_eq!(text, "tls-hello", "the framed reply rides the merged record");
+            eprintln!("c113 receipt: reply content tls-hello rides the ledger");
+        } else {
+            // the honest race fallback (ADR-0004): the pair keyed
+            // unresolved on the dev-VM pid-space face; the merge face
+            // rides c111, the chunked-join evidence proves the reply
+            // reached the ledger
+            eprintln!("c113 note: the reply rides the race fallback (ADR-0004); the request face landed");
+        }
     assert_eq!(call["mode"], "attributed", "the HTTPS face captures attributed");
 }

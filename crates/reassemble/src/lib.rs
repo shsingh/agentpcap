@@ -895,6 +895,11 @@ impl Reassembler {
         } else {
             extra.push("pair:by-id".into());
         }
+        // the response half's boundary faces ride the merged record's
+        // evidence (the R123 face): a chunked-join or tls-boundary face
+        // names the capture the reply survived, so the merged record
+        // never drops the reply's capture proof
+        extra.extend(frame.tap_evidence);
         if error_face {
             extra.push("error-response".into());
         }
@@ -960,7 +965,14 @@ impl Reassembler {
 
         let mut evidence = p.tap_evidence.clone();
         evidence.push(format!("chan:{}", p.peer));
-        evidence.extend(extra_evidence);
+        // the dedup face: the extra faces (the response half's capture
+        // proof, the bind faces) never duplicate a line the request
+        // half already carries
+        for face in extra_evidence {
+            if !evidence.contains(&face) {
+                evidence.push(face);
+            }
+        }
         evidence.push(format!("reassembled:{}", event_name_for(&p.method)));
         if p.method == "tools/list" {
             if let Some(tools) = result.get("tools").and_then(|t| t.as_array()) {

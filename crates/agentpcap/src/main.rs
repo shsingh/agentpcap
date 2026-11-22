@@ -822,15 +822,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                         .or_else(|| {
                             payload_bytes.windows(2).position(|w| w == b"\n\n")
                         })
-                        .and_then(|i| {
+                        .map(|i| {
                             if payload_bytes
                                 .get(i..i + 4)
                                 .map(|w| w == b"\r\n\r\n")
                                 .unwrap_or(false)
                             {
-                                Some(i + 4)
+                                i + 4
                             } else {
-                                Some(i + 2)
+                                i + 2
                             }
                         })
                         .unwrap_or(payload_bytes.len());
@@ -840,8 +840,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                     // carries per-chunk size lines — the byte decode
                     // concatenates the chunk payloads so a reply whose
                     // chunks fit the sample window parses whole; the one
-                    // lossy decode rides the JOIN, never a slice cut
+                    // lossy decode rides the JOIN, never a slice cut.
+                    // the chunked-join evidence lands WHETHER or not the
+                    // replayed pair resolves: the evidence row proves the
+                    // chunked reply reached the ledger
                     if headers.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+                        evidence.push("chunked-join".to_string());
                         dechunk(&payload_bytes[head_end..])
                     } else {
                         payload_bytes[head_end..].to_vec()
@@ -850,8 +854,43 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                     payload_bytes.to_vec()
                 };
                 let candidate = String::from_utf8_lossy(&body_bytes);
-                let mut parsed =
-                    serde_json::from_str::<Value>(candidate.as_ref()).ok().filter(|v| v.is_object());
+                // the sse face: a text/event-stream reply carries its
+                // JSON in `data:` lines — each line parses on its own
+                // (an SSE event never holds split JSON), and the first
+                // structurally complete line answers the request. The
+                // content-type faces the RAW sample's header block (a
+                // reply face: `HTTP/1.` start); a request face carries
+                // application/json and never rides this face
+                let sse_headers = if payload_bytes.starts_with(b"HTTP/1.") {
+                    payload_bytes
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map(|i| {
+                            String::from_utf8_lossy(&payload_bytes[..i])
+                                .to_ascii_lowercase()
+                                .contains("content-type: text/event-stream")
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let mut parsed = if sse_headers {
+                    let mut found = None;
+                    for line in candidate.lines() {
+                        if let Some(rest) = line.strip_prefix("data:") {
+                            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                            if let Ok(v) = serde_json::from_str::<Value>(rest) {
+                                if v.is_object() {
+                                    found = Some(v);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    found
+                } else {
+                    serde_json::from_str::<Value>(candidate.as_ref()).ok().filter(|v| v.is_object())
+                };
                 // the raw fingerprint rides BEFORE any mode rebuild: a
                 // notification's dedupe face keeps the raw message's
                 // digest (a hash, not content), so two different

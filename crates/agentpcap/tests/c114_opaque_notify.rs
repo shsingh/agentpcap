@@ -65,6 +65,9 @@ fn c114_the_opaque_notification_never_waits_for_a_reply() {
     .unwrap();
     let _ = f.flush();
     drop(f);
+    // the child's wait faces clippy's wait_on_spawn: `cat` reads EOF
+    // when the pipe closes — the wait rides after the drop
+    let _ = sink.wait();
     let st = tap.wait().expect("tap exits at its deadline");
     assert!(st.success(), "c114: the tap exits cleanly");
 
