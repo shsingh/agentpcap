@@ -105,12 +105,21 @@ struct Pending {
 
 struct PendingBucket {
     by_id: HashMap<String, Vec<Pending>>,
+    /// The channels the client parked requests on: a later
+    /// client-side notification resolves its session through them.
+    channels: Vec<String>,
 }
 
-/// One known session: the capability face and the burst cadence window.
+/// One known session: the capability face, its channel faces, and the
+/// burst cadence window.
 struct Session {
     cap_fingerprint: Option<String>,
     protocol_version: Option<String>,
+    /// The channel keys the session's frames rode (the request's
+    /// channel at bind time, the response's channel beside it): a
+    /// client-side notification finds its session through the one it
+    /// wrote on.
+    channels: Vec<String>,
     burst_at: Option<Instant>,
     burst_count: u16,
     notify_seq: u64,
@@ -122,6 +131,7 @@ impl Session {
         Self {
             cap_fingerprint: None,
             protocol_version: None,
+            channels: Vec::new(),
             burst_at: None,
             burst_count: 0,
             notify_seq: 0,
@@ -188,7 +198,43 @@ impl Reassembler {
             };
             for ((_, mut parked)) in bucket.by_id.drain() {
                 for p in parked.drain(..) {
-                    out.push(self.emit_merged(None, &p, Value::Null, vec!["no-response".into()]));
+                    // the session face resolves first: the pair that
+                    // bound earlier responses on this request's channel
+                    // carries the session's fingerprint, so the
+                    // no-response record keys THAT session, never a raw
+                    // channel that would read as a separate face. More
+                    // than one pair on the channel is honest ambiguity:
+                    // the raw channel face answers (multi-server
+                    // clients pair per response, never across ids).
+                    let known = self
+                        .sessions
+                        .iter()
+                        .filter(|(k, s)| {
+                            k.starts_with("pipe-pair:")
+                                && s.channels.iter().any(|c| *c == p.peer)
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect::<Vec<_>>();
+                    let bind_key = if known.len() == 1 {
+                        known.first().cloned()
+                    } else {
+                        None
+                    };
+                    out.push(self.emit_merged(
+                        bind_key.clone(),
+                        &p,
+                        Value::Null,
+                        vec!["no-response".into()],
+                        true,
+                    ));
+                    // the resolved session keeps riding the channel face
+                    if let Some(bk) = &bind_key {
+                        if let Some(s) = self.sessions.get_mut(bk) {
+                            if !s.channels.contains(&p.peer) {
+                                s.channels.push(p.peer.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -211,7 +257,10 @@ impl Reassembler {
         let bucket = self
             .pending
             .entry(key)
-            .or_insert_with(|| PendingBucket { by_id: HashMap::new() });
+            .or_insert_with(|| PendingBucket { by_id: HashMap::new(), channels: Vec::new() });
+        if !bucket.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+            bucket.channels.push(frame.peer.clone());
+        }
         bucket.by_id.entry(id.clone()).or_default().push(Pending {
             transport: frame.transport.clone(),
             peer: frame.peer.clone(),
@@ -229,36 +278,63 @@ impl Reassembler {
     // -- notification path ----------------------------------------------
 
     fn on_notification(&mut self, frame: Frame) -> Vec<Event> {
-        // The client side of a pipe session also sends notifications
-        // (notifications/initialized rides the request channel after the
-        // init pair). Where the writer is the client that owns a
-        // pending bucket, the record keys that client face, never a
-        // pair the client is not a member of.
+        // Session face priority: the notification's own channel already
+        // joined a session (the request channel at its pair's bind, the
+        // reply channel beside it) - the notification rides THAT
+        // session, never a split one. Without a joined session, the
+        // client that owns a pending bucket keys its client face
+        // (`client:{pid}`) until a pair binds; otherwise the pipe-pair
+        // rule answers.
         let pipe_class = frame.peer.starts_with("pipe:");
-        let mut client_face = false;
-        let key = if pipe_class && self.pending.contains_key(&format!("req:{}", frame.pid)) {
-            client_face = true;
-            format!("client:{}", frame.pid)
+        // the joined candidates: every session the channel rode. A
+        // pair answers only when the evidence identifies ONE: two
+        // pairs sharing the channel (the multi-server client) is
+        // ambiguity, and the notification keys its client face or its
+        // parent-pair face, never an arbitrary session.
+        let joined = if is_channel_face(&frame.peer) {
+            self.sessions
+                .iter()
+                .filter(|(_, s)| s.channels.iter().any(|c| *c == frame.peer))
+                .filter(|(k, _)| !k.starts_with("client:"))
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
         } else {
-            self.session_key_for(&frame)
+            Vec::new()
+        };
+        let mut client_face = false;
+        let key = if joined.len() == 1 {
+            joined[0].clone()
+        } else {
+            client_face = joined.len() > 1;
+            if pipe_class && self.pending.contains_key(&format!("req:{}", frame.pid)) {
+                client_face = true;
+                format!("client:{}", frame.pid)
+            } else {
+                self.session_key_for(&frame)
+            }
         };
         let m = frame
             .payload
             .get("method")
             .and_then(|m| m.as_str())
             .unwrap_or_default();
-        let verdict = if self.method_is_a2a(m) {
+        let framed = frame_is_jsonrpc(&frame.payload);
+        let verdict = if self.method_is_a2a(m) && framed {
             Verdict::A2a
-        } else if self.method_is_mcp(m) {
+        } else if framed && self.method_is_mcp(m) {
             Verdict::Mcp
         } else {
             Verdict::AgentUnidentified
         };
+        let event_face = if framed { "notify" } else { "unidentified" };
         let payload = Some(frame.payload.clone());
         let session = self
             .sessions
             .entry(key.clone())
             .or_insert_with(Session::new);
+        if !session.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+            session.channels.push(frame.peer.clone());
+        }
         session.notify_seq += 1;
         let seq = session.notify_seq;
         let fp = session.cap_fingerprint.clone();
@@ -277,7 +353,7 @@ impl Reassembler {
             transport: frame.transport.clone(),
             mode: self.mode.clone(),
             verdict,
-            event: "notify".into(),
+            event: event_face.into(),
             method: frame.payload.get("method").and_then(|m| m.as_str()).map(str::to_string),
             tool_name: None,
             cap_fingerprint: fp,
@@ -360,12 +436,44 @@ impl Reassembler {
                 if let Some(bucket_key) = bucket_key {
                     if let Some(b) = self.pending.get_mut(&bucket_key) {
                         let mut consumed = false;
+                        let mut consumed_pair: Option<String> = None;
                         if let Some(v) = b.by_id.get_mut(&id) {
                             if v.len() == 1 {
                                 let p = v.remove(0);
                                 consumed = v.is_empty();
+                                // the session face resolves first: the
+                                // pair that bound earlier responses on
+                                // this channel rides, exactly as the
+                                // flush face resolves (the dying
+                                // writer's fallback carries the known
+                                // session, never a separate raw face)
+                                consumed_pair = if p.peer.starts_with("pipe:") {
+                                    let known: Vec<String> = self
+                                        .sessions
+                                        .iter()
+                                        .filter(|(k, s)| {
+                                            k.starts_with("pipe-pair:")
+                                                && s.channels
+                                                    .iter()
+                                                    .any(|c| *c == p.peer)
+                                        })
+                                        .map(|(k, _)| k.clone())
+                                        .collect();
+                                    if known.len() == 1 {
+                                        known.first().cloned()
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    // the socket classes key the
+                                    // session by the peer itself
+                                    Some(p.peer.clone())
+                                };
                                 // the session keys on the request's own channel
-                                bound = Some((p.peer.clone(), p));
+                                bound = Some((
+                                    consumed_pair.unwrap_or_else(|| p.peer.clone()),
+                                    p,
+                                ));
                             }
                         }
                         if consumed {
@@ -397,7 +505,20 @@ impl Reassembler {
         if error_face {
             extra.push("error-response".into());
         }
-        let ev = self.emit_merged(Some(bind_key), &p, result, extra);
+        let ev = self.emit_merged(Some(bind_key), &p, result, extra, false);
+        // the session's channel face: both halves' channels ride it, so
+        // the client-side notifications of this conversation resolve to
+        // this same session. The `unresolved` placeholder never rides:
+        // a dead writer's face names no channel, and registering it
+        // would let unrelated dying writers hijack the session.
+        if let Some(s) = self.sessions.get_mut(&ev.peer) {
+            if !s.channels.contains(&p.peer) && is_channel_face(&p.peer) {
+                s.channels.push(p.peer.clone());
+            }
+            if !s.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+                s.channels.push(frame.peer.clone());
+            }
+        }
         vec![ev]
     }
 
@@ -406,13 +527,16 @@ impl Reassembler {
     /// The merged session event: the request side and the response side
     /// of one bind. `bind_key = None` marks the flush path, where no
     /// server ever bound and the record rides the request's own
-    /// channel with the loss evidence.
+    /// channel with the loss evidence. `stamped_at_observation`
+    /// carries the flush face: the record stamps the request's
+    /// observation time, never the emission moment.
     fn emit_merged(
         &mut self,
         bind_key: Option<String>,
         p: &Pending,
         result: Value,
         extra_evidence: Vec<String>,
+        stamped_at_observation: bool,
     ) -> Event {
         let peer = match &bind_key {
             Some(k) => k.clone(),
@@ -460,27 +584,34 @@ impl Reassembler {
         } else {
             None
         };
-        let verdict = if self.method_is_a2a(&p.method) {
+        let verdict = if self.method_is_a2a(&p.method) && frame_is_jsonrpc(&p.req) {
             Verdict::A2a
-        } else if self.method_is_mcp(&p.method) {
+        } else if frame_is_jsonrpc(&p.req) && self.method_is_mcp(&p.method) {
             Verdict::Mcp
         } else {
-            // an unknown method face stays honest: the verdict comes
-            // from the protocol semantics, never from a catalog
+            // an unframed face stays honest: the verdict comes from the
+            // protocol semantics, never from a method name alone - a
+            // frame that carries no valid JSON-RPC framing member never
+            // becomes mcp, whatever its method string claims
             Verdict::AgentUnidentified
         };
-        let event_name = event_name_for(&p.method);
+        let event_name = if frame_is_jsonrpc(&p.req) {
+            event_name_for(&p.method)
+        } else {
+            "unidentified"
+        };
         let dedup = format!("{}:{}:{}:{}", p.transport, peer, event_name, p.id);
         let payload = match &bind_key {
             Some(_) => Some(serde_json::json!({"request": p.req, "result": result})),
             None => Some(serde_json::json!({"request": p.req, "result": Value::Null})),
         };
         // the merged bind stamps the bind time (the response half
-        // completes the record); the flush face stamps the request's
+        // completes the record); every flush face stamps the request's
         // observation time, never the capture window's end (ADR-0007)
-        let ts = match bind_key {
-            Some(_) => now_rfc3339(),
-            None => p.observed_ts.clone(),
+        let ts = if stamped_at_observation {
+            p.observed_ts.clone()
+        } else {
+            now_rfc3339()
         };
         Event {
             ts,
@@ -608,4 +739,19 @@ fn json_id(v: &Value) -> String {
         Value::String(s) => format!("str:{s}"),
         _ => "none".to_string(),
     }
+}
+
+/// the JSON-RPC framing face: the verdict requires the member the
+/// classifier keys on - a frame without `jsonrpc: "2.0"` never takes
+/// `mcp` or `a2a`, whatever its method string claims.
+fn frame_is_jsonrpc(payload: &Value) -> bool {
+    payload.get("jsonrpc").and_then(|j| j.as_str()) == Some("2.0")
+}
+
+/// The channel-face check (ADR-0007 face rule): only a real channel
+/// resolves or rides a session. The tap's `unresolved` placeholder
+/// names no channel - a dead writer's traffic never hijacks another
+/// conversation's session.
+fn is_channel_face(peer: &str) -> bool {
+    !peer.is_empty() && peer != "unresolved"
 }

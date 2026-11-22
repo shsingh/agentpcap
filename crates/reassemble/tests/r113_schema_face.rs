@@ -38,10 +38,12 @@ fn r113_the_session_face_carries_2_0_and_the_flush_rides_the_observation_time() 
         "the session-event face carries the 2.0 version"
     );
     // a lost request parks long before the flush: its flush record
-    // stamps the observation time, not the window's end
+    // stamps the observation time, not the window's end - the strict
+    // reject: a capture-end face would stamp the same second as the
+    // gate, and `ev.ts < gate` would fail
     let early = json!({"jsonrpc": "2.0", "id": 42, "method": "initialize", "params": {}});
     assert!(r.feed(frame("pipe:102", 700, 100, early)).is_empty());
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    std::thread::sleep(std::time::Duration::from_millis(2100));
     let flush_moment = agentpcap_ledger::now_rfc3339();
     let flushed = r.flush();
     assert_eq!(flushed.len(), 1);
@@ -51,8 +53,8 @@ fn r113_the_session_face_carries_2_0_and_the_flush_rides_the_observation_time() 
         "the flush face carries the 2.0 version"
     );
     assert!(
-        ev.ts <= flush_moment,
-        "the flush stamps the observation time: ts={} <= flush={flush_moment}",
+        ev.ts < flush_moment,
+        "the flush stamps the observation time, strictly before the gate: ts={} gate={flush_moment}",
         ev.ts
     );
 }
