@@ -49,3 +49,59 @@ The toolchain step (LLVM 19 + bpf-linker on GitHub runners) is proven at
 tag time: the first release build exercises it. The build VM proved the
 same chain on LLVM 23 with the local shim; the workflow pins the 19-dev
 packages.
+
+## The alpha2 wire-class sweep (PRs #62–#81, 2026-11-22)
+
+Every merged pull request of the alpha2 wire-class lane, audited after
+the last PR (#81) merged. Thread counts ride each PR's review threads;
+every resolved thread's fix carries its ledger receipt on that PR. The
+five still-open threads disposition here.
+
+| PR | Lane | Threads | Resolved | Open |
+|----|------|---------|----------|------|
+| #62 | the alpha1 scenario | 4 | 4 | 0 |
+| #63 | the gate report | 3 | 2 | 1 |
+| #64 | the audit fixes | 8 | 6 | 2 |
+| #67 | the release toolchain | 1 | 1 | 0 |
+| #68 | the eBPF toolchain | 1 | 1 | 0 |
+| #71 | the badge rows | 1 | 1 | 0 |
+| #76 | the spec anchors | 0 | 0 | 0 (no thread) |
+| #77 | the reassembler | 18 | 18 | 0 |
+| #78 | the export and drift slice | 19 | 19 | 0 |
+| #79 | the deploy and coexistence slice | 31 | 30 | 1 |
+| #80 | the socket collector | 41 | 41 | 0 |
+| #81 | the TLS boundary collector | 57 | 56 | 1 |
+
+### The open dispositions
+
+- **PR #63 — `c101_scenario.rs`, "Other traffic fails the scenario":**
+  superseded on main. The rows filter to the run's own client pid
+  (`tests/agentpcap/tests/c101_scenario.rs`, the `mine` selection), so
+  another server's replies never satisfy the asserts; the payload-set
+  tie (the exact ids, the server name, the tool list, the result text)
+  rides every C1xx cell.
+- **PR #64 — `main.rs`, "Non-pipe writes are still recorded":**
+  superseded by the wire redesign. A non-pipe fd resolves through the
+  ADR-0005 socket resolver; an unresolvable fd keys `socket-unresolved`
+  with `fd-unresolved-at-pop` evidence — first-class, never a bogus
+  pipe value.
+- **PR #64 — `main.rs`, "Messages name the wrong pipe" (fd reuse):**
+  accepted and documented inside ADR-0004's pop-time race family. The
+  fd may close and its number may ride a different file inside the pop
+  window; the reassembler keys sessions by the session-event faces, and
+  the C1xx cells tie their rows to run-unique markers, so a reused fd
+  never crosses a test's records.
+- **PR #79 — `c009_duration_faces.rs`, "Startup errors pass duration
+  test":** fixed in this PR. The bounded-window face asserts the exit
+  status (`st.success()`); a probe-load or ledger-open failure can no
+  longer pass it. Receipt at this PR's head: full workspace rc=0.
+- **PR #81 — `main.rs`, "Streamed replies lose results" (SSE):** the
+  `data:`-line parse face landed in #81; the integration cell holds on
+  the stale-content capture defect (#83), whose red receipt rides that
+  issue. The cell re-lands with the collect-provenance fix.
+
+### The verdict
+
+No open review bot thread blocks the `2026.01-alpha2` gate: two rides
+documented races the specs already declare (ADR-0004, issue #83), one
+face fixed in this audit PR, two superseded by merged redesign.

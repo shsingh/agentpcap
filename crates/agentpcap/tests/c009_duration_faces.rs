@@ -29,10 +29,12 @@ fn c009_the_bounded_window_ends_by_itself() {
     let mut child = spawn_tap(&ledger, "1");
     // one second plus the drain: the bounded tap exits on its own
     std::thread::sleep(Duration::from_millis(1500));
-    let exited = child.try_wait().expect("the tap answers").is_some();
+    let st = child.try_wait().expect("the tap answers").expect("the tap exits");
+    // the exit face: the bounded tap exits SUCCESS — a startup failure
+    // (a probe load error, an unopenable ledger) never passes this face
     assert!(
-        exited,
-        "a --duration 1 tap ends inside about one second"
+        st.success(),
+        "a --duration 1 tap ends CLEAN inside about one second, not in failure"
     );
     let _ = child.wait();
 }
