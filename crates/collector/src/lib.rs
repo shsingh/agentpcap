@@ -108,8 +108,13 @@ pub fn resolve_socket_peer(pid: u32, fd: u32) -> Option<SocketPeer> {
 /// socket, the columns `sl local rem st ... uid timeout inode`. The
 /// addresses ride hex: `AABBCCDD:port` little-endian ip; parse to
 /// dotted form.
-fn five_tuple_by_inode(pid: u32, inode: u64) -> Option<SocketPeer> {
+/// The process's table rows parse once: (inode, connection face) per
+/// row, wildcard-remote rows skip (a listener names no connection).
+fn five_tuple_rows(pid: u32) -> Vec<(u64, SocketPeer)> {
     let tables = ["tcp", "tcp6", "udp", "udp6"];
+    let mut rows = Vec::new();
+    // the namespace reads ONCE per scan, never once per row
+    let ns = net_namespace(pid);
     for table in tables {
         let data = match std::fs::read_to_string(format!("/proc/{pid}/net/{table}")) {
             Ok(data) => data,
@@ -123,16 +128,69 @@ fn five_tuple_by_inode(pid: u32, inode: u64) -> Option<SocketPeer> {
             if cols.len() < 10 {
                 continue;
             }
-            let found = cols[9].parse::<u64>().ok();
-            if found != Some(inode) {
+            let inode = match cols[9].parse::<u64>() {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+            let (Some(local), Some(remote)) = (endpoint(cols[1]), endpoint(cols[2])) else {
                 continue;
-            }
-            let local = endpoint(cols[1])?;
-            let remote = endpoint(cols[2])?;
+            };
             // a wildcard remote names no connection face: every remote
             // client of one unconnected UDP socket would share the row
             // — the direction face rides the syscall capture instead
             // (the post-gate lane)
+            if remote == "0.0.0.0:0" || remote == "[::]:0" {
+                continue;
+            }
+            let Some(ns) = ns.clone() else {
+                continue;
+            };
+            let mut pair = [local.clone(), remote.clone()];
+            pair.sort();
+            let transport: &'static str = if table.starts_with("tcp") {
+                TRANSPORT_TCP
+            } else {
+                TRANSPORT_UDP
+            };
+            // the dual-stack face: the key names the TRANSPORT (tcp/udp)
+            // not the table, and the endpoint normalizes the v4-mapped
+            // v6 rows — an ip4 client on a v6 listener shares its peer
+            // face with both ends
+            rows.push((
+                inode,
+                SocketPeer {
+                    transport,
+                    peer: format!("{ns}{transport}:{}={transport}:{}", pair[0], pair[1]),
+                    local,
+                    remote,
+                },
+            ));
+        }
+    }
+    rows
+}
+
+fn five_tuple_by_inode(pid: u32, inode: u64) -> Option<SocketPeer> {
+    // the SHARED-QUEUE face: a fd-resolve samples one fd at a time, so
+    // this lookup stays cheap — scan the raw lines, decode only the
+    // match, return at first hit; unrelated rows never decode
+    let tables = ["tcp", "tcp6", "udp", "udp6"];
+    let ns = net_namespace(pid)?;
+    for table in tables {
+        let data = match std::fs::read_to_string(format!("/proc/{pid}/net/{table}")) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        for line in data.lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 10 {
+                continue;
+            }
+            if cols[9].parse::<u64>().ok() != Some(inode) {
+                continue;
+            }
+            let local = endpoint(cols[1])?;
+            let remote = endpoint(cols[2])?;
             if remote == "0.0.0.0:0" || remote == "[::]:0" {
                 continue;
             }
@@ -143,13 +201,6 @@ fn five_tuple_by_inode(pid: u32, inode: u64) -> Option<SocketPeer> {
             } else {
                 TRANSPORT_UDP
             };
-            // the namespace face: the peer carries it, so two
-            // namespaces' identical faces never merge
-            let ns = net_namespace(pid)?;
-            // the dual-stack face: the key names the TRANSPORT (tcp/udp)
-            // not the table, and the endpoint normalizes the v4-mapped
-            // v6 rows — an ip4 client on a v6 listener shares its peer
-            // face with both ends
             return Some(SocketPeer {
                 transport,
                 peer: format!("{ns}{transport}:{}={transport}:{}", pair[0], pair[1]),
@@ -217,10 +268,11 @@ pub const TRANSPORT_UDP: &str = "udp";
 /// holds, never the ssl struct. A writer with several connected
 /// sockets is ambiguous and keys honestly with its evidence; the
 /// ambiguity face rides the caller.
-pub fn scan_connected_socket(pid: u32) -> Option<String> {
+pub fn scan_connected_socket(pid: u32) -> Option<SocketPeer> {
+    // the rows parse once per scan and never per descriptor
+    let rows = five_tuple_rows(pid);
     let dir = format!("/proc/{pid}/fd");
     let entries = std::fs::read_dir(&dir).ok()?;
-    let mut inode = None;
     for e in entries.flatten() {
         if let Ok(link) = std::fs::read_link(e.path()) {
             let text = link.to_string_lossy().to_string();
@@ -228,18 +280,19 @@ pub fn scan_connected_socket(pid: u32) -> Option<String> {
                 continue;
             }
             if let Ok(in_) = text[8..text.len() - 1].parse::<u64>() {
-                if let Some(face) = five_tuple_by_inode(pid, in_) {
+                if let Some(face) = rows.iter().find(|(i, _)| *i == in_) {
                     // a listener's remote face rides 0.0.0.0:0; the
-                    // connected socket carries a real remote
-                    if !face.peer.ends_with(".tcp:0.0.0.0:0") {
-                        inode = Some(face.peer);
-                        break;
+                    // connected socket carries a real remote (the rows
+                    // already skip the wildcards; the check keeps the
+                    // honest face for tables that name them)
+                    if !face.1.remote.ends_with(":0") {
+                        return Some(face.1.clone());
                     }
                 }
             }
         }
     }
-    inode
+    None
 }
 
 /// Resolve the parent pid of `pid` through `/proc/<pid>/status` (the
@@ -310,6 +363,8 @@ pub fn classify_pipe_sample(pid: u32, ppid: u32, comm: &str, first_bytes: &[u8])
     let object = match serde_json::from_str::<serde_json::Value>(candidate) {
         Ok(v) => v,
         // A truncated sample (sample-first-N-bytes) must not guess.
+        // A truncated sample never guesses: agent-shaped stays the
+        // verdict face either way
         Err(_) => return Decision::AgentUnidentified,
     };
     let Some(obj) = object.as_object() else {

@@ -23,7 +23,8 @@ fn send_once(port: u16, marker: &str) {
     c.write_all(jsonrpc_marked(marker).as_bytes())
         .expect("the send");
     let mut buf = [0u8; 32];
-    let _ = c.read(&mut buf);
+    let n = c.read(&mut buf).unwrap_or(0);
+    let _ = n;
 }
 
 #[test]
@@ -55,7 +56,7 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
         .expect("cgroup_allow map missing")
         .try_into()
         .expect("cgroup_allow is not a hashmap");
-    let mut seen: aya::maps::Array<_, u64> = bpf
+    let seen: aya::maps::Array<_, u64> = bpf
         .take_map("cgroup_seen")
         .expect("cgroup_seen map missing")
         .try_into()
@@ -73,7 +74,8 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
     let server = std::thread::spawn(move || {
         let (mut s, _) = listener.accept().expect("the accept");
         let mut buf = [0u8; 64];
-        s.read(&mut buf).unwrap_or(0);
+        let n = s.read(&mut buf).unwrap_or(0);
+        let _ = n;
     });
     send_once(port, "p113-calibrate");
     server.join().expect("the server joins");
@@ -103,7 +105,8 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
     let server = std::thread::spawn(move || {
         let (mut s, _) = listener.accept().expect("the accept");
         let mut buf = [0u8; 64];
-        s.read(&mut buf).unwrap_or(0);
+        let n = s.read(&mut buf).unwrap_or(0);
+        let _ = n;
     });
     send_once(port, "p113-writer-in");
     server.join().expect("the server joins");
@@ -128,7 +131,7 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
     // phase 3: the marker leaves, the same write drops, the canary
     // stays current (the probe invoked)
     {
-        let mut canary: aya::maps::Array<_, u64> = bpf
+        let canary: aya::maps::Array<_, u64> = bpf
             .take_map("sock_canary")
             .expect("sock_canary map missing")
             .try_into()
@@ -143,7 +146,8 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
         let server = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().expect("the accept");
             let mut buf = [0u8; 64];
-            s.read(&mut buf).unwrap_or(0);
+            let n2 = s.read(&mut buf).unwrap_or(0);
+            let _ = n2;
         });
         send_once(port, "p113-writer-unallowed");
         server.join().expect("the server joins");

@@ -5,7 +5,6 @@
 // line over a loopback TCP socket.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use agentpcap_collector::PipeSample;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -20,7 +19,7 @@ fn p110_the_socket_probe_loads_fires_and_counts() {
         obj.display()
     );
 
-    let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
+    let mut bpf = aya::Ebpf::load_file(&obj).expect("bpf load failed");
     let prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap_socket")
         .expect("the socket program missing from object")
@@ -40,7 +39,7 @@ fn p110_the_socket_probe_loads_fires_and_counts() {
         .expect("attach to sys_exit_sendto failed");
 
     // the canary counts outcomes: invoke at 0, push-ok at 2
-    let mut canary: aya::maps::Array<_, u64> = bpf
+    let canary: aya::maps::Array<_, u64> = bpf
         .take_map("sock_canary")
         .expect("sock_canary map missing")
         .try_into()

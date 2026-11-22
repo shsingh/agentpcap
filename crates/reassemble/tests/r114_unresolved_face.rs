@@ -40,9 +40,8 @@ fn r114_the_placeholder_never_registers_and_never_matches() {
     assert!(r.feed(frame("pipe:100", 1001, 100, req_a)).is_empty());
     let bound = r.feed(dying(frame("unresolved", 2002, 0, resp_a)));
     assert_eq!(bound.len(), 1, "A's pair binds through the fallback");
-    assert_eq!(
+    assert!(
         bound[0].cap_fingerprint.is_some(),
-        true,
         "A's session carries its capability face"
     );
     // a later notification from ANOTHER dead writer carries no channel:

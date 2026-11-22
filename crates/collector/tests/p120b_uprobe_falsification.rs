@@ -24,7 +24,7 @@ fn p120b_the_uprobe_path_fires_on_libc_write() {
     prog.attach(Some("write"), 0, "/lib/aarch64-linux-gnu/libc.so.6", None)
         .expect("the uprobe attach to libc write failed");
 
-    let mut canary: aya::maps::Array<_, u64> = bpf
+    let canary: aya::maps::Array<_, u64> = bpf
         .take_map("tls_canary")
         .expect("tls_canary map missing")
         .try_into()

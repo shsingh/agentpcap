@@ -5,7 +5,6 @@
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
 use agentpcap_collector::{resolve_parent, ParentCache, PipeSample};
-use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -23,7 +22,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
         obj.display()
     );
 
-    let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
+    let mut bpf = aya::Ebpf::load_file(&obj).expect("bpf load failed");
     let write_prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap")
         .expect("write program missing from object")

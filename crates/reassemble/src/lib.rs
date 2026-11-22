@@ -58,7 +58,8 @@ pub struct Frame {
     pub transport: String,
     /// The channel key the tap resolved for THIS sample's writer
     /// (`pipe:{inode}` for the pipe class; the canonical five-tuple for
-    /// the socket classes).
+    /// the socket classes; the session id face for a Streamable HTTP
+    /// exchange whose header rode).
     pub peer: String,
     /// The writer's machine pid.
     pub pid: u32,
@@ -69,8 +70,49 @@ pub struct Frame {
     /// The parsed JSON-RPC object. The tap feeds only frames that parse.
     pub payload: Value,
     /// The evidence lines the tap already established for this sample
-    /// (transport face, lineage, fd-unresolved-at-pop).
+    /// (transport face, lineage, fd-unresolved-at-pop; a Streamable
+    /// HTTP exchange's `http-session:{id}` face rides here — the
+    /// record's session id prefers it, the bind keys stay the
+    /// connection faces so a reply whose side omits the header never
+    /// loses its request, spec Section 5).
     pub tap_evidence: Vec<String>,
+}
+
+/// The record's session-id face: a Streamable HTTP exchange whose
+/// header rode carries the `http-session:{id}` evidence face, and the
+/// RECORD prefers it (spec Section 5's reconstruction MUST); the bind
+/// keys stay the connection faces, so a reply whose side omits the
+/// header never loses its request.
+fn session_id_face(tap_evidence: &[String], fallback: String) -> String {
+    tap_evidence
+        .iter()
+        .find(|e| e.starts_with("http-session:"))
+        .cloned()
+        .unwrap_or(fallback)
+}
+
+/// The reply's requester face, selected by the reply's PROBE face: a
+/// receive face (the reply observed by the requesting client) names the
+/// reply's OWN local face; a send face (the reply observed by the
+/// replying server) names the reply's remote face. The helper rides the
+/// match, the completed store and the completed check alike — the two
+/// copies of one reply carried at both endpoints always compare the
+/// same face.
+fn requester_face_of(tap_evidence: &[String]) -> Option<String> {
+    let frame_local = tap_evidence
+        .iter()
+        .find_map(|e| e.strip_prefix("local-end:").map(|v| v.to_string()));
+    match tap_evidence
+        .iter()
+        .find_map(|e| e.strip_prefix("probe-face:").map(|v| v.to_string()))
+        .as_deref()
+    {
+        Some("receive") => frame_local,
+        Some("send") => tap_evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("remote-end:").map(|v| v.to_string())),
+        _ => None,
+    }
 }
 
 /// The capability fingerprint rule: the ledger hash rule over the
@@ -105,6 +147,11 @@ struct Pending {
     /// requests against it (the deployed service never grows its
     /// pending face without limit).
     parked_at: Instant,
+    /// The run-unique observation sequence AT THE PARK: the session
+    /// event's key faces by it, so two exchanges reusing one id within
+    /// the same second key twice (R120), and one call observed by both
+    /// its endpoints keys once (R119's observation-merge face).
+    seq_at_park: u64,
     /// The socket requester's own endpoint (the frame's `local-end`
     /// face): the response's remote face must equal it, so two
     /// endpoints' same-id requests never cross.
@@ -193,7 +240,7 @@ pub struct Reassembler {
     /// while the peer's other reply body passes its own face. The face
     /// clears per id at the next park and the sweep clears it whole
     /// (bounded).
-    socket_completed: HashMap<String, HashMap<String, u64>>,
+    socket_completed: HashMap<String, HashMap<String, Vec<(u64, String)>>>,
 }
 
 const TOOLS_EVIDENCE_CAP: usize = 16;
@@ -444,6 +491,7 @@ impl Reassembler {
             if duplicate {
                 return vec![];
             }
+            self.obs_seq += 1;
             bucket.by_id.entry(id.clone()).or_default().push(Pending {
                 transport: frame.transport.clone(),
                 peer: frame.peer.clone(),
@@ -454,6 +502,7 @@ impl Reassembler {
                 comm: frame.comm.clone(),
                 tap_evidence: frame.tap_evidence.clone(),
                 observed_ts: now_rfc3339(),
+                seq_at_park: self.obs_seq,
                 parked_at: Instant::now(),
                 sock_local: pending_local.clone(),
                 probe_face: frame
@@ -557,6 +606,18 @@ impl Reassembler {
         if client_face {
             evidence.push("notification:client-side".into());
         }
+        // the duplicate face hashes the RAW message when the face
+        // carries it: a mode rebuild would strip two different
+        // notifications to one body and one would drop in the burst
+        // window — the honest fingerprint never narrows capture
+        let notify_fingerprint = frame
+            .tap_evidence
+            .iter()
+            .find(|e| e.starts_with("nhash:"))
+            .and_then(|e| e.strip_prefix("nhash:").map(String::from))
+            .unwrap_or_else(|| {
+                format!("{:016x}", fnv64(serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice()))
+            });
         let ev = Event {
             ts: now_rfc3339(),
             host: self.host.clone(),
@@ -570,13 +631,13 @@ impl Reassembler {
             tool_name: None,
             cap_fingerprint: fp,
             protocol_version: proto,
-            session_id: Some(key.clone()),
+            session_id: Some(session_id_face(&frame.tap_evidence, key.clone())),
             peer: key.clone(),
             dedup: format!(
-                "{}:{}:notify:notify-{:016x}@{}.{:012}",
+                "{}:{}:notify:notify-{}@{}.{:012}",
                 frame.transport,
                 key,
-                fnv64(serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice()),
+                notify_fingerprint,
                 now_rfc3339(),
                 self.obs_seq,
             ),
@@ -628,16 +689,53 @@ impl Reassembler {
                 serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice(),
             );
             if let Some(completed) = self.socket_completed.get(&frame.peer) {
-                if completed.get(&id) == Some(&reply_body_hash) && response_remote.is_some() {
-                    return vec![];
+                if let Some(entries) = completed.get(&id) {
+                    // the SAME requester already received this body: the
+                    // probe's other copy drops. A DIFFERENT requester's
+                    // same-shaped reply (opaque strips their bodies to
+                    // one face) binds its OWN request — the completed
+                    // face keeps HISTORY PER REQUESTER, so one end never
+                    // erases the other's record. The check rides the
+                    // PROBE-FACE-SELECTED requester face — the same
+                    // selection the store made — so both endpoint copies
+                    // of one reply compare the same name
+                    let selected = requester_face_of(&frame.tap_evidence);
+                    if entries.iter().any(|(h, requester)| {
+                        *h == reply_body_hash && selected.as_deref() == Some(requester.as_str())
+                    }) {
+                        return vec![];
+                    }
                 }
             }
             if let Some(b) = self.pending.get_mut(&frame.peer) {
                 if let Some(v) = b.by_id.get_mut(&id) {
-                    let matched = match &response_remote {
+                    // the PROBE face chooses the requester's endpoint:
+                    // a receive face (the reply observed by the
+                    // requesting client) names it as the reply's OWN
+                    // local face; a send face (the reply observed by the
+                    // replying server) names it as the reply's REMOTE
+                    // face. The face never accepts both — two ends'
+                    // same-id requests never cross
+                    let requester_face = requester_face_of(&frame.tap_evidence);
+                    let matched = match &requester_face {
                         Some(face) => v
                             .iter()
-                            .position(|p| p.sock_local.as_deref() == Some(face.as_str())),
+                            .position(|p| {
+                                // the requester face rides the both-sides
+                                // face; the SERVER-ONLY face (only the
+                                // server side in the tap's scope) rides the
+                                // reply writer's OWN local face against a
+                                // request the same writer READ (the p's
+                                // probe face names receive) — the p that
+                                // parked through a send never enters the
+                                // alternate, so the cross-end face stays
+                                // closed
+                                p.sock_local.as_deref() == Some(face.as_str())
+                                    || (p.probe_face.as_deref() == Some("receive")
+                                        && requester_face_of(&frame.tap_evidence)
+                                            .as_deref()
+                                            == p.sock_local.as_deref())
+                            }),
                         None => {
                             if v.is_empty() {
                                 None
@@ -647,16 +745,38 @@ impl Reassembler {
                         }
                     };
                     if let Some(pos) = matched {
-                        let p = v.remove(pos);
+                        let mut p = v.remove(pos);
+                        // the reply's header faces merge into the parked
+                        // evidence: the merged event carries the session
+                        // id or the version face the reply observed even
+                        // when its request's side carried none
+                        for face in &frame.tap_evidence {
+                            if (face.starts_with("http-session:")
+                                || face.starts_with("http-version:"))
+                                && !p.tap_evidence.contains(face)
+                            {
+                                p.tap_evidence.push(face.clone());
+                            }
+                        }
                         let consumed = v.is_empty();
                         if consumed && response_remote.is_some() {
                             b.by_id.remove(&id);
                         }
                         bound = Some((frame.peer.clone(), p));
-                        self.socket_completed
+                        let stored_requester =
+                            requester_face_of(&frame.tap_evidence).unwrap_or_default();
+                        let done = self
+                            .socket_completed
                             .entry(frame.peer.clone())
                             .or_default()
-                            .insert(id.clone(), reply_body_hash);
+                            .entry(id.clone())
+                            .or_default();
+                        if !done
+                            .iter()
+                            .any(|e| *e == (reply_body_hash, stored_requester.clone()))
+                        {
+                            done.push((reply_body_hash, stored_requester));
+                        }
                     }
                 }
             }
@@ -879,10 +999,14 @@ impl Reassembler {
         };
         // the observation time rides the key: a restarted capture that
         // re-observes the same id on the same session is a NEW call,
-        // never a replay of an earlier run's event
+        // never a replay of an earlier run's event. The run-unique
+        // observation sequence rides beside it: two exchanges that
+        // reuse one id within the SAME second key twice, never once
+        // (the R120 face; across runs the observation moment carries
+        // the separation, the run counter carries this run's)
         let dedup = format!(
-            "{}:{}:{}:{}@{}",
-            p.transport, peer, event_name, p.id, p.observed_ts
+            "{}:{}:{}:{}@{}.{:012x}",
+            p.transport, peer, event_name, p.id, p.observed_ts, p.seq_at_park
         );
         let payload = match &bind_key {
             Some(_) => Some(serde_json::json!({"request": p.req, "result": result})),
@@ -909,7 +1033,7 @@ impl Reassembler {
             tool_name,
             cap_fingerprint: fp,
             protocol_version: proto,
-            session_id: Some(peer.clone()),
+            session_id: Some(session_id_face(&p.tap_evidence, peer.clone())),
             peer,
             dedup,
             payload,
@@ -969,7 +1093,7 @@ impl Reassembler {
             tool_name: None,
             cap_fingerprint: None,
             protocol_version: None,
-            session_id: Some(key.clone()),
+            session_id: Some(session_id_face(&frame.tap_evidence, key.clone())),
             peer: key.clone(),
             dedup: format!(
                 "{}:{}:unidentified:orphan-{:016x}@{}.{:012}",

@@ -77,7 +77,7 @@ fn p121_the_udp_receive_face_rides_the_ledger() {
     let udp: Vec<&serde_json::Value> =
         recs.iter().filter(|r| r["transport"] == "udp").collect();
     assert!(
-        udp.len() >= 1,
+        !udp.is_empty(),
         "a UDP observation rides the udp transport: {recs:?}"
     );
     // the merged pair: the request parked under the five-tuple, the

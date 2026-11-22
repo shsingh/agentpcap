@@ -19,11 +19,6 @@ fn frame(peer: &str, pid: u32, ppid: u32, payload: serde_json::Value) -> Frame {
     }
 }
 
-fn dying(mut frame: Frame) -> Frame {
-    frame.tap_evidence.push("fd-unresolved-at-pop".into());
-    frame
-}
-
 #[test]
 fn r113_the_session_face_carries_2_1_and_the_flush_rides_the_observation_time() {
     let mut r = Reassembler::new("lab-host".into(), Mode::Attributed, "tap".into());

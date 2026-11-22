@@ -25,7 +25,7 @@ fn attach_and_count(
     let libssl = "/usr/lib/aarch64-linux-gnu/libssl.so.3";
     prog.attach(Some(symbol), 0, libssl, None)
         .expect("the attach failed");
-    let mut canary: aya::maps::Array<_, u64> = bpf
+    let canary: aya::maps::Array<_, u64> = bpf
         .take_map("tls_canary")
         .expect("tls_canary map missing")
         .try_into()

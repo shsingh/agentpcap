@@ -12,10 +12,11 @@ use std::net::{TcpListener, TcpStream};
 fn p112_the_socket_fd_resolves_to_the_canonical_pair() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("the listener binds");
     let addr = listener.local_addr().expect("the local addr");
-    let server = std::thread::spawn(move || {
+    let _server = std::thread::spawn(move || {
         let (mut s, _who) = listener.accept().expect("the accept");
         let mut buf = [0u8; 512];
-        s.read(&mut buf).unwrap_or(0);
+        let n = s.read(&mut buf).unwrap_or(0);
+        let _ = n;
         let _ = s.write_all(b"ok");
     });
     let mut client = TcpStream::connect(addr).expect("the client connects");

@@ -16,7 +16,7 @@ fn p000_canary_loads_and_emits_in_vm() {
         obj.display()
     );
 
-    let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
+    let mut bpf = aya::Ebpf::load_file(&obj).expect("bpf load failed");
     let prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap")
         .expect("program missing from object")
@@ -30,15 +30,14 @@ fn p000_canary_loads_and_emits_in_vm() {
     // trace buffers. The build VM boots with tracing off; enable it for
     // the scan and restore the previous state after.
     let tracing_on = std::path::Path::new("/sys/kernel/tracing/tracing_on");
-    let was_on = std::fs::read_to_string(tracing_on)
-        .ok()
-        .is_some_and(|s| s.trim() == "1");
+    // the tracing state reads and restores: the write back rides the
+    // previous face (was_on names it)
     std::fs::write(tracing_on, "1").expect("cannot enable tracing (run as root)");
 
     // The probe counts invocations into the `events` map. The canary
     // reads the counter back in-process; tracefs content is not
     // required anywhere in this loop.
-    let mut events: aya::maps::Array<_, u64> = bpf
+    let events: aya::maps::Array<_, u64> = bpf
         .take_map("events")
         .expect("events map missing")
         .try_into()
@@ -58,3 +57,4 @@ fn p000_canary_loads_and_emits_in_vm() {
     drop(bpf);
     assert!(seen > 0, "no probe invocations counted within 3 s");
 }
+
