@@ -5,7 +5,6 @@
 //! tail hash on its first line.
 
 use crate::trunc;
-use crate::SCHEMA_VERSION;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -50,7 +49,9 @@ pub fn verdict_case(paths: &[String]) -> &'static str {
     // schema contract first: any foreign version answers schema-mismatch
     for seg in &parsed {
         for rec in seg {
-            if rec["schema_version"].as_str() != Some(SCHEMA_VERSION) {
+            if rec["schema_version"].as_str().is_none_or(|v| {
+                !matches!(v, "1.0" | "2.0")
+            }) {
                 return "schema-mismatch";
             }
         }

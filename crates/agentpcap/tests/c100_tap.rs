@@ -1,8 +1,11 @@
 // C100 — the tap runtime: `agentpcap tap` runs the probe loop, classifies
-// the samples, and appends the classified events to the ledger. The test
+// the samples, and appends the reassembled events to the ledger. The test
 // writes one MCP-shaped frame and one methodless result frame on a real
-// pipe (the tap records pipe traffic only, per ADR-0003); both surface in
-// the report with the right verdicts and the attributed mode.
+// pipe (the tap records pipe traffic only, per ADR-0003). The ids ride
+// this cell's own space (500/501): the parallel suite runs every cell's
+// tap on the host's pipe traffic, and an id another cell parks would
+// make the reassembler's bind ambiguous. Both surface in the report
+// with the right verdicts and the attributed mode.
 // Spec: docs/spec.md#5-collectors, docs/spec.md#9-operator-cli.
 // Cell ledger: tests/matrix/LEDGER.md.
 
@@ -43,12 +46,12 @@ fn c100_tap_ledgers_the_classified_flow() {
     let mut f = sink.stdin.take().unwrap();
     writeln!(
         f,
-        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"read","arguments":{{"path":"/etc/hostname"}}}}}}"#
+        r#"{{"jsonrpc":"2.0","id":500,"method":"tools/call","params":{{"name":"read","arguments":{{"path":"/etc/hostname"}}}}}}"#
     )
     .unwrap();
     writeln!(
         f,
-        r#"{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"captured"}}]}}}}"#
+        r#"{{"jsonrpc":"2.0","id":501,"result":{{"content":[{{"type":"text","text":"captured"}}]}}}}"#
     )
     .unwrap();
     let _ = f.flush();
