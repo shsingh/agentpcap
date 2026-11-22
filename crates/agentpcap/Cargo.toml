@@ -9,6 +9,7 @@ license.workspace = true
 agentpcap-collector = { path = "../collector" }
 agentpcap-events = { path = "../events" }
 agentpcap-ledger = { path = "../ledger" }
+agentpcap-reassemble = { path = "../reassemble" }
 aya = "0.13"
 serde_json = "1"
 tempfile = "=3.27.0"
