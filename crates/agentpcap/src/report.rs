@@ -58,20 +58,19 @@ pub fn sessions(ledger_path: &std::path::Path, actor: &str) -> Result<Vec<Value>
         {
             obj["server"] = json!(server);
         }
-        // the discovered tools ride the tools-list result
+        // the tools face: the LATEST tools-list names the server's
+        // current set — descriptions refresh on a later fetch of the
+        // same list and removed tools leave the view
         if let Some(tools) = rec["payload"]["result"]["tools"].as_array() {
-            let list = obj["tools"].as_array_mut().expect("the tools keep a list");
-            for t in tools {
-                if let Some(name) = t["name"].as_str() {
-                    let description = t["description"].as_str().unwrap_or("");
-                    if !list
-                        .iter()
-                        .any(|e| e["name"].as_str() == Some(name))
-                    {
-                        list.push(json!({"name": name, "description": description}));
-                    }
-                }
-            }
+            let refreshed: Vec<Value> = tools
+                .iter()
+                .filter_map(|t| {
+                    t["name"].as_str().map(|name| {
+                        json!({"name": name, "description": t["description"].as_str().unwrap_or("")})
+                    })
+                })
+                .collect();
+            obj["tools"] = json!(refreshed);
         }
         if rec["event"] == "tools-call" {
             let calls = obj["invocations"].as_u64().unwrap_or(0);

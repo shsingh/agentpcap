@@ -82,6 +82,11 @@ pub fn capability_fingerprint(capabilities: &Value) -> String {
     hex::encode(h.finalize())[..16].to_string()
 }
 
+/// The session-event record's schema face (ADR-0007): the merged
+/// payload shape differs from the frame face, and the version
+/// distinguishes them inside one ledger.
+pub const RECORD_SCHEMA_VERSION: &str = "2.1";
+
 /// One parked request frame, awaiting a response that binds its id.
 struct Pending {
     transport: String,
@@ -92,20 +97,51 @@ struct Pending {
     pid: u32,
     comm: String,
     tap_evidence: Vec<String>,
+    /// The frame's observation time: the time the reassembler first
+    /// saw it (≈ the sample's pop, within one drain tick). The
+    /// flush face stamps this, never the window's end.
+    observed_ts: String,
+    /// The park moment: the sweep expires the stale unanswered
+    /// requests against it (the deployed service never grows its
+    /// pending face without limit).
+    parked_at: Instant,
 }
 
 struct PendingBucket {
     by_id: HashMap<String, Vec<Pending>>,
+    /// The channels the client parked requests on: a later
+    /// client-side notification resolves its session through them.
+    channels: Vec<String>,
 }
 
-/// One known session: the capability face and the burst cadence window.
+/// One known session: the capability face, its channel faces, and the
+/// burst cadence window.
 struct Session {
     cap_fingerprint: Option<String>,
     protocol_version: Option<String>,
+    /// The channel keys the session's frames rode (the request's
+    /// channel at bind time, the response's channel beside it): a
+    /// client-side notification finds its session through the one it
+    /// wrote on.
+    channels: Vec<String>,
     burst_at: Option<Instant>,
     burst_count: u16,
-    notify_seq: u64,
-    orphan_seq: u64,
+    /// The last frame that touched the session: the sweep expires the
+    /// idle ones (the deployed service never grows its session face
+    /// without limit).
+    last_activity: Instant,
+}
+
+/// The FNV-1a hash over bytes: the dedupe keys ride content, not a
+/// per-run counter — a restarted capture never re-mints an earlier
+/// run's key.
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 impl Session {
@@ -113,10 +149,10 @@ impl Session {
         Self {
             cap_fingerprint: None,
             protocol_version: None,
+            channels: Vec::new(),
             burst_at: None,
             burst_count: 0,
-            notify_seq: 0,
-            orphan_seq: 0,
+            last_activity: Instant::now(),
         }
     }
 }
@@ -127,22 +163,123 @@ pub struct Reassembler {
     source: String,
     sessions: HashMap<String, Session>,
     pending: HashMap<String, PendingBucket>,
+    /// The idle face: requests parked longer, and sessions untouched
+    /// longer, expire at the sweep (the writer bounds its face for the
+    /// deployed service).
+    ttl: Duration,
+    /// The sweep's next due moment: the loop's calls between sweeps
+    /// stay O(1) (the cadence rides a ttl quarter).
+    next_sweep: Instant,
+    /// The observation counter: every notification and orphan faces a
+    /// run-unique observation number, so even twins inside one second
+    /// never share a key (across runs the timestamp separates them).
+    obs_seq: u64,
 }
 
 const TOOLS_EVIDENCE_CAP: usize = 16;
 const BURST_WINDOW: Duration = Duration::from_secs(1);
+/// The deployed service's idle face: requests parked longer, and
+/// sessions untouched longer, expire at the sweep.
+pub const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(600);
 
 use agentpcap_events::Mode;
 
 impl Reassembler {
     pub fn new(host: String, mode: Mode, source: String) -> Self {
+        Self::new_with_ttl(host, mode, source, DEFAULT_SESSION_TTL)
+    }
+
+    /// The idle-face constructor: the sweep expires parked requests
+    /// and idle sessions against this ttl. The deployed service never
+    /// grows its in-memory faces without limit.
+    pub fn new_with_ttl(host: String, mode: Mode, source: String, ttl: Duration) -> Self {
         Self {
             host,
             mode,
             source,
             sessions: HashMap::new(),
             pending: HashMap::new(),
+            ttl,
+            next_sweep: Instant::now(),
+            obs_seq: 0,
         }
+    }
+
+    /// The idle face: the stale parked requests ride the no-response
+    /// face one last time (capture loss degrades the ledger, it never
+    /// drops them), then they leave the pending map; the idle sessions
+    /// follow. A later frame re-observes an expired session the same
+    /// way a fresh one forms.
+    pub fn sweep(&mut self) -> Vec<Event> {
+        // the cadence face: the sweep fires at most once per ttl
+        // quarter — the loop's idle ticks stay O(1)
+        let now = Instant::now();
+        if now < self.next_sweep {
+            return Vec::new();
+        }
+        self.next_sweep = now + self.ttl / 4;
+
+        let mut out = Vec::new();
+        let mut stale: Vec<Pending> = Vec::new();
+        // per-REQUEST granularity: only the requests past the ttl ride
+        // the loss face; a same-id request parked later keeps its park
+        let keys: Vec<String> = self.pending.keys().cloned().collect();
+        for k in keys {
+            let Some(bucket) = self.pending.get_mut(&k) else {
+                continue;
+            };
+            let ids: Vec<String> = bucket.by_id.keys().cloned().collect();
+            for id in ids {
+                let Some(v) = bucket.by_id.get_mut(&id) else {
+                    continue;
+                };
+                let mut kept: Vec<Pending> = Vec::new();
+                let mut dropped: Vec<Pending> = Vec::new();
+                for p in v.drain(..) {
+                    if p.parked_at.elapsed() > self.ttl {
+                        dropped.push(p);
+                    } else {
+                        kept.push(p);
+                    }
+                }
+                *v = kept;
+                stale.append(&mut dropped);
+                if bucket.by_id.get(&id).is_some_and(|v| v.is_empty()) {
+                    bucket.by_id.remove(&id);
+                }
+            }
+        }
+        self.pending.retain(|_, b| !b.by_id.is_empty());
+        for p in &stale {
+            out.push(self.emit_loss(p));
+        }
+        // the idle sessions follow — a session with a request still
+        // waiting on one of its channels stays: an active call keeps
+        // its capability face while the answer is in flight
+        let waiting: std::collections::HashSet<String> = self
+            .pending
+            .values()
+            .flat_map(|b| {
+                b.by_id
+                    .values()
+                    .flatten()
+                    .map(|p| p.peer.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let expired: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| {
+                s.last_activity.elapsed() > self.ttl
+                    && s.channels.iter().all(|c| !waiting.contains(c))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in expired {
+            self.sessions.remove(&k);
+        }
+        out
     }
 
     /// Feed one classified frame; returns the events to append now.
@@ -168,6 +305,40 @@ impl Reassembler {
         }
     }
 
+    /// Emit one parked request's no-response face: the pair that
+    /// bound earlier responses on this request's channel carries the
+    /// session's fingerprint; more than one pair on the channel is
+    /// honest ambiguity and the raw channel face answers. Shared by
+    /// the window-end flush and the sweep.
+    fn emit_loss(&mut self, p: &Pending) -> Event {
+        let known = self
+            .sessions
+            .iter()
+            .filter(|(k, s)| {
+                k.starts_with("pipe-pair:")
+                    && s.channels.iter().any(|c| *c == p.peer)
+            })
+            .map(|(k, _)| k.clone())
+            .collect::<Vec<_>>();
+        let bind_key = if known.len() == 1 {
+            known.first().cloned()
+        } else {
+            None
+        };
+        let ev = self
+            .emit_merged(bind_key.clone(), p, Value::Null, vec!["no-response".into()], true);
+        // the resolved session keeps riding the channel face
+        if let Some(bk) = &bind_key {
+            if let Some(s) = self.sessions.get_mut(bk) {
+                if !s.channels.contains(&p.peer) {
+                    s.channels.push(p.peer.clone());
+                }
+                s.last_activity = Instant::now();
+            }
+        }
+        ev
+    }
+
     /// Emit the still-pending frames at the tap window's end: capture
     /// loss degrades the ledger, it never drops it silently.
     pub fn flush(&mut self) -> Vec<Event> {
@@ -179,7 +350,7 @@ impl Reassembler {
             };
             for ((_, mut parked)) in bucket.by_id.drain() {
                 for p in parked.drain(..) {
-                    out.push(self.emit_merged(None, &p, Value::Null, vec!["no-response".into()]));
+                    out.push(self.emit_loss(&p));
                 }
             }
         }
@@ -202,7 +373,10 @@ impl Reassembler {
         let bucket = self
             .pending
             .entry(key)
-            .or_insert_with(|| PendingBucket { by_id: HashMap::new() });
+            .or_insert_with(|| PendingBucket { by_id: HashMap::new(), channels: Vec::new() });
+        if !bucket.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+            bucket.channels.push(frame.peer.clone());
+        }
         bucket.by_id.entry(id.clone()).or_default().push(Pending {
             transport: frame.transport.clone(),
             peer: frame.peer.clone(),
@@ -212,6 +386,8 @@ impl Reassembler {
             pid: frame.pid,
             comm: frame.comm.clone(),
             tap_evidence: frame.tap_evidence.clone(),
+            observed_ts: now_rfc3339(),
+            parked_at: Instant::now(),
         });
         vec![]
     }
@@ -219,38 +395,66 @@ impl Reassembler {
     // -- notification path ----------------------------------------------
 
     fn on_notification(&mut self, frame: Frame) -> Vec<Event> {
-        // The client side of a pipe session also sends notifications
-        // (notifications/initialized rides the request channel after the
-        // init pair). Where the writer is the client that owns a
-        // pending bucket, the record keys that client face, never a
-        // pair the client is not a member of.
+        // Session face priority: the notification's own channel already
+        // joined a session (the request channel at its pair's bind, the
+        // reply channel beside it) - the notification rides THAT
+        // session, never a split one. Without a joined session, the
+        // client that owns a pending bucket keys its client face
+        // (`client:{pid}`) until a pair binds; otherwise the pipe-pair
+        // rule answers.
         let pipe_class = frame.peer.starts_with("pipe:");
-        let mut client_face = false;
-        let key = if pipe_class && self.pending.contains_key(&format!("req:{}", frame.pid)) {
-            client_face = true;
-            format!("client:{}", frame.pid)
+        // the joined candidates: every session the channel rode. A
+        // pair answers only when the evidence identifies ONE: two
+        // pairs sharing the channel (the multi-server client) is
+        // ambiguity, and the notification keys its client face or its
+        // parent-pair face, never an arbitrary session.
+        let joined = if is_channel_face(&frame.peer) {
+            self.sessions
+                .iter()
+                .filter(|(_, s)| s.channels.iter().any(|c| *c == frame.peer))
+                .filter(|(k, _)| !k.starts_with("client:"))
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
         } else {
-            self.session_key_for(&frame)
+            Vec::new()
+        };
+        let mut client_face = false;
+        let key = if joined.len() == 1 {
+            joined[0].clone()
+        } else {
+            client_face = joined.len() > 1;
+            if pipe_class && self.pending.contains_key(&format!("req:{}", frame.pid)) {
+                client_face = true;
+                format!("client:{}", frame.pid)
+            } else {
+                self.session_key_for(&frame)
+            }
         };
         let m = frame
             .payload
             .get("method")
             .and_then(|m| m.as_str())
             .unwrap_or_default();
-        let verdict = if self.method_is_a2a(m) {
+        let framed = frame_is_jsonrpc(&frame.payload);
+        let verdict = if self.method_is_a2a(m) && framed {
             Verdict::A2a
-        } else if self.method_is_mcp(m) {
+        } else if framed && self.method_is_mcp(m) {
             Verdict::Mcp
         } else {
             Verdict::AgentUnidentified
         };
+        let event_face = if framed { "notify" } else { "unidentified" };
         let payload = Some(frame.payload.clone());
         let session = self
             .sessions
             .entry(key.clone())
             .or_insert_with(Session::new);
-        session.notify_seq += 1;
-        let seq = session.notify_seq;
+        // touch: the event marks the session's activity face
+        session.last_activity = Instant::now();
+        self.obs_seq += 1;
+        if !session.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+            session.channels.push(frame.peer.clone());
+        }
         let fp = session.cap_fingerprint.clone();
         let proto = session.protocol_version.clone();
         let mut evidence = frame.tap_evidence.clone();
@@ -267,18 +471,25 @@ impl Reassembler {
             transport: frame.transport.clone(),
             mode: self.mode.clone(),
             verdict,
-            event: "notify".into(),
+            event: event_face.into(),
             method: frame.payload.get("method").and_then(|m| m.as_str()).map(str::to_string),
             tool_name: None,
             cap_fingerprint: fp,
             protocol_version: proto,
             session_id: Some(key.clone()),
             peer: key.clone(),
-            dedup: format!("{}:{}:notify:notify-{seq}", frame.transport, key),
+            dedup: format!(
+                "{}:{}:notify:notify-{:016x}@{}.{:012}",
+                frame.transport,
+                key,
+                fnv64(serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice()),
+                now_rfc3339(),
+                self.obs_seq,
+            ),
             payload,
             evidence: Some(evidence),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         };
         vec![ev]
     }
@@ -306,12 +517,20 @@ impl Reassembler {
         if pipe_class && frame.ppid > 0 {
             let bucket_key = format!("req:{}", frame.ppid);
             if let Some(b) = self.pending.get_mut(&bucket_key) {
+                let mut consumed = false;
                 if let Some(v) = b.by_id.get_mut(&id) {
                     if v.len() == 1 {
                         let p = v.remove(0);
+                        consumed = v.is_empty();
                         bound = Some((format!("pipe-pair:{}:{}", frame.ppid, frame.pid), p));
                         pair_face = true;
                     }
+                }
+                // the completed id's empty vec leaves the map: a stale
+                // empty face under the id would pollute the fallback's
+                // later lookups
+                if consumed {
+                    b.by_id.remove(&id);
                 }
             }
         }
@@ -334,18 +553,56 @@ impl Reassembler {
                 )];
             }
             if matches == 1 {
-                let keys: Vec<String> = self
+                let bucket_key: Option<String> = self
                     .pending
                     .iter()
-                    .filter(|(_, b)| b.by_id.contains_key(&id))
-                    .map(|(k, _)| k.clone())
-                    .collect();
-                if let Some(b) = self.pending.get_mut(&keys[0]) {
-                    if let Some(v) = b.by_id.get_mut(&id) {
-                        if v.len() == 1 {
-                            let p = v.remove(0);
-                            // the session keys on the request's own channel
-                            bound = Some((p.peer.clone(), p));
+                    .find(|(_, b)| b.by_id.get(&id).map_or(false, |v| !v.is_empty()))
+                    .map(|(k, _)| k.clone());
+                if let Some(bucket_key) = bucket_key {
+                    if let Some(b) = self.pending.get_mut(&bucket_key) {
+                        let mut consumed = false;
+                        let mut consumed_pair: Option<String> = None;
+                        if let Some(v) = b.by_id.get_mut(&id) {
+                            if v.len() == 1 {
+                                let p = v.remove(0);
+                                consumed = v.is_empty();
+                                // the session face resolves first: the
+                                // pair that bound earlier responses on
+                                // this channel rides, exactly as the
+                                // flush face resolves (the dying
+                                // writer's fallback carries the known
+                                // session, never a separate raw face)
+                                consumed_pair = if p.peer.starts_with("pipe:") {
+                                    let known: Vec<String> = self
+                                        .sessions
+                                        .iter()
+                                        .filter(|(k, s)| {
+                                            k.starts_with("pipe-pair:")
+                                                && s.channels
+                                                    .iter()
+                                                    .any(|c| *c == p.peer)
+                                        })
+                                        .map(|(k, _)| k.clone())
+                                        .collect();
+                                    if known.len() == 1 {
+                                        known.first().cloned()
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    // the socket classes key the
+                                    // session by the peer itself
+                                    Some(p.peer.clone())
+                                };
+                                // the session keys on the request's own channel
+                                bound = Some((
+                                    consumed_pair.unwrap_or_else(|| p.peer.clone()),
+                                    p,
+                                ));
+                            }
+                        }
+                        if consumed {
+                            b.by_id.remove(&id);
                         }
                     }
                 }
@@ -357,7 +614,7 @@ impl Reassembler {
         // the merge binds the result member, or the error member when
         // the response carries one: the error face rides the evidence
         // and the payload both
-        let error_face = frame.payload.contains_key("error");
+        let error_face = frame.payload.get("error").is_some();
         let result = frame
             .payload
             .get("result")
@@ -373,7 +630,20 @@ impl Reassembler {
         if error_face {
             extra.push("error-response".into());
         }
-        let ev = self.emit_merged(Some(bind_key), &p, result, extra);
+        let ev = self.emit_merged(Some(bind_key), &p, result, extra, false);
+        // the session's channel face: both halves' channels ride it, so
+        // the client-side notifications of this conversation resolve to
+        // this same session. The `unresolved` placeholder never rides:
+        // a dead writer's face names no channel, and registering it
+        // would let unrelated dying writers hijack the session.
+        if let Some(s) = self.sessions.get_mut(&ev.peer) {
+            if !s.channels.contains(&p.peer) && is_channel_face(&p.peer) {
+                s.channels.push(p.peer.clone());
+            }
+            if !s.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+                s.channels.push(frame.peer.clone());
+            }
+        }
         vec![ev]
     }
 
@@ -382,13 +652,16 @@ impl Reassembler {
     /// The merged session event: the request side and the response side
     /// of one bind. `bind_key = None` marks the flush path, where no
     /// server ever bound and the record rides the request's own
-    /// channel with the loss evidence.
+    /// channel with the loss evidence. `stamped_at_observation`
+    /// carries the flush face: the record stamps the request's
+    /// observation time, never the emission moment.
     fn emit_merged(
         &mut self,
         bind_key: Option<String>,
         p: &Pending,
         result: Value,
         extra_evidence: Vec<String>,
+        stamped_at_observation: bool,
     ) -> Event {
         let peer = match &bind_key {
             Some(k) => k.clone(),
@@ -402,6 +675,8 @@ impl Reassembler {
                     .sessions
                     .entry(peer.clone())
                     .or_insert_with(Session::new);
+                // touch: the event marks the session's activity face
+                session.last_activity = Instant::now();
                 session.cap_fingerprint = Some(capability_fingerprint(caps));
                 session.protocol_version = result
                     .get("protocolVersion")
@@ -410,6 +685,8 @@ impl Reassembler {
             }
         }
         let session = self.sessions.entry(peer.clone()).or_insert_with(Session::new);
+        // touch: the event marks the session's activity face
+        session.last_activity = Instant::now();
         let fp = session.cap_fingerprint.clone();
         let proto = session.protocol_version.clone();
 
@@ -436,23 +713,43 @@ impl Reassembler {
         } else {
             None
         };
-        let verdict = if self.method_is_a2a(&p.method) {
+        let verdict = if self.method_is_a2a(&p.method) && frame_is_jsonrpc(&p.req) {
             Verdict::A2a
-        } else if self.method_is_mcp(&p.method) {
+        } else if frame_is_jsonrpc(&p.req) && self.method_is_mcp(&p.method) {
             Verdict::Mcp
         } else {
-            // an unknown method face stays honest: the verdict comes
-            // from the protocol semantics, never from a catalog
+            // an unframed face stays honest: the verdict comes from the
+            // protocol semantics, never from a method name alone - a
+            // frame that carries no valid JSON-RPC framing member never
+            // becomes mcp, whatever its method string claims
             Verdict::AgentUnidentified
         };
-        let event_name = event_name_for(&p.method);
-        let dedup = format!("{}:{}:{}:{}", p.transport, peer, event_name, p.id);
+        let event_name = if frame_is_jsonrpc(&p.req) {
+            event_name_for(&p.method)
+        } else {
+            "unidentified"
+        };
+        // the observation time rides the key: a restarted capture that
+        // re-observes the same id on the same session is a NEW call,
+        // never a replay of an earlier run's event
+        let dedup = format!(
+            "{}:{}:{}:{}@{}",
+            p.transport, peer, event_name, p.id, p.observed_ts
+        );
         let payload = match &bind_key {
             Some(_) => Some(serde_json::json!({"request": p.req, "result": result})),
             None => Some(serde_json::json!({"request": p.req, "result": Value::Null})),
         };
+        // the merged bind stamps the bind time (the response half
+        // completes the record); every flush face stamps the request's
+        // observation time, never the capture window's end (ADR-0007)
+        let ts = if stamped_at_observation {
+            p.observed_ts.clone()
+        } else {
+            now_rfc3339()
+        };
         Event {
-            ts: now_rfc3339(),
+            ts,
             host: self.host.clone(),
             process: p.comm.clone(),
             pid: p.pid,
@@ -470,7 +767,7 @@ impl Reassembler {
             payload,
             evidence: Some(evidence),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         }
     }
 
@@ -478,14 +775,17 @@ impl Reassembler {
     /// the shape features and, on repeated frames inside the burst
     /// window on one session, the cadence line (spec section 6).
     fn emit_orphan(&mut self, frame: Frame, mut features: Vec<String>) -> Event {
-        let key = self.session_key_for(&frame);
-        let (burst_line, orphan_n) = {
+        // the orphan keys its own channel: no pair bound, so no pipe
+        // pair face rides the record
+        let key = frame.peer.clone();
+        let burst_line = {
             let session = self
                 .sessions
                 .entry(key.clone())
                 .or_insert_with(Session::new);
-            session.orphan_seq += 1;
-            let n = session.orphan_seq;
+                // touch: the event marks the session's activity face
+                session.last_activity = Instant::now();
+                self.obs_seq += 1;
             let now = Instant::now();
             let line = match session.burst_at {
                 Some(start) if now.duration_since(start) <= BURST_WINDOW => {
@@ -498,7 +798,7 @@ impl Reassembler {
                     None
                 }
             };
-            (line, n)
+            line
         };
         if let Some(l) = burst_line {
             features.push(l);
@@ -524,13 +824,17 @@ impl Reassembler {
             session_id: Some(key.clone()),
             peer: key.clone(),
             dedup: format!(
-                "{}:{}:unidentified:orphan-{orphan_n}",
-                frame.transport, key
+                "{}:{}:unidentified:orphan-{:016x}@{}.{:012}",
+                frame.transport,
+                key,
+                fnv64(serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice()),
+                now_rfc3339(),
+                self.obs_seq,
             ),
             payload: Some(frame.payload.clone()),
             evidence: Some([frame.tap_evidence, features].concat()),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         };
         ev
     }
@@ -575,4 +879,19 @@ fn json_id(v: &Value) -> String {
         Value::String(s) => format!("str:{s}"),
         _ => "none".to_string(),
     }
+}
+
+/// the JSON-RPC framing face: the verdict requires the member the
+/// classifier keys on - a frame without `jsonrpc: "2.0"` never takes
+/// `mcp` or `a2a`, whatever its method string claims.
+fn frame_is_jsonrpc(payload: &Value) -> bool {
+    payload.get("jsonrpc").and_then(|j| j.as_str()) == Some("2.0")
+}
+
+/// The channel-face check (ADR-0007 face rule): only a real channel
+/// resolves or rides a session. The tap's `unresolved` placeholder
+/// names no channel - a dead writer's traffic never hijacks another
+/// conversation's session.
+fn is_channel_face(peer: &str) -> bool {
+    !peer.is_empty() && peer != "unresolved"
 }

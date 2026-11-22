@@ -28,7 +28,7 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path>\n       agentpcap report --ledger <path>\n       agentpcap export --ledger <path> [--follow]\n       agentpcap diff --before <ledger> --after <ledger>\n       agentpcap tap --ledger <path> [--duration <seconds>]";
+const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>]\n       (--duration 0 runs the capture unbounded)";
 
 /// The flag walker: `--flag <value>` pairs and standalone `--flag`
 /// switches. Misuse is the caller's exit-2 face.
@@ -45,52 +45,76 @@ fn flag(args: &[String], name: &str, takes_value: bool) -> Option<String> {
     None
 }
 
+/// The stop face: the signal handler marks the stop; the tap loop
+/// breaks and the drain flushes the still-pending requests.
+static STOP_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_stop(_sig: i32) {
+    STOP_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let verb = args.first().map(String::as_str);
-    match verb {
-        Some("record") => match flag(&args[1..], "--ledger", true) {
-            Some(path) => record(PathBuf::from(path)),
-            None => misuse(USAGE),
-        },
-        Some("report") => match flag(&args[1..], "--ledger", true) {
-            Some(path) => report(PathBuf::from(path)),
-            None => misuse(USAGE),
-        },
-        Some("export") => match flag(&args[1..], "--ledger", true) {
-            Some(path) => export(
-                PathBuf::from(path),
-                flag(&args[1..], "--follow", false).is_some(),
-            ),
-            None => misuse(USAGE),
-        },
-        Some("diff") => {
+    // a trailing `--source` is misuse, not an omitted flag: the value
+    // face distinguishes an absent switch from a missing value (exit
+    // 2, before the ledger opens)
+    if args.contains(&"--source".to_string())
+        && args.get(args.iter().position(|a| a == "--source").unwrap() + 1)
+            .is_none()
+    {
+        eprintln!("agentpcap: --source needs a value");
+        return ExitCode::from(2);
+    }
+    match (args.first().map(String::as_str), args.get(2)) {
+        (Some("record"), Some(path)) => record(
+            PathBuf::from(path),
+            flag(&args[1..], "--source", true),
+        ),
+        (Some("report"), Some(path)) => report(PathBuf::from(path)),
+        (Some("tap"), Some(path)) => tap(
+            PathBuf::from(path),
+            args.iter()
+                .position(|a| a == "--duration")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(60),
+        ),
+        (Some("export"), Some(path)) => export(
+            PathBuf::from(path),
+            flag(&args[1..], "--follow", false).is_some(),
+        ),
+        (Some("diff"), Some(_)) => {
             let before = flag(&args[1..], "--before", true);
             let after = flag(&args[1..], "--after", true);
             match (before, after) {
                 (Some(b), Some(a)) => diff(PathBuf::from(b), PathBuf::from(a)),
-                _ => misuse(USAGE),
+                _ => {
+                    eprintln!("{USAGE}");
+                    ExitCode::from(2)
+                }
             }
         }
-        Some("tap") => match flag(&args[1..], "--ledger", true) {
-            Some(path) => tap(
-                PathBuf::from(path),
-                flag(&args[1..], "--duration", true)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60),
-            ),
-            None => misuse(USAGE),
-        },
-        _ => misuse(USAGE),
+        _ => {
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
     }
 }
 
-fn misuse(_msg: &str) -> ExitCode {
-    eprintln!("{USAGE}");
-    ExitCode::from(2)
+/// The FNV-1a hash over bytes: the tap's dedupe keys ride the sample
+/// content, not the per-run counter — a restarted capture re-mints
+/// nothing from an earlier run.
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
-fn record(path: PathBuf) -> ExitCode {
+fn record(path: PathBuf, source: Option<String>) -> ExitCode {
     let mut writer = match LedgerWriter::create(&path) {
         Ok(w) => w,
         Err(e) => {
@@ -111,18 +135,34 @@ fn record(path: PathBuf) -> ExitCode {
         if line.trim().is_empty() {
             continue;
         }
-        let event = match serde_json::from_str(&line) {
+        let mut event =
+            match serde_json::from_str::<serde_json::Value>(&line) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("agentpcap record: event {n} is not valid JSON: {e}");
                 return ExitCode::FAILURE;
             }
         };
-        if let Err(e) = writer.append(&event) {
-            eprintln!("agentpcap record: {e}");
-            return ExitCode::FAILURE;
+        // the coexistence stamp: the ingest face names the capture path
+        // the record entered through (spec section 11)
+        if let Some(s) = &source {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("source".into(), Value::String(s.clone()));
+            }
         }
-        count += 1;
+        match writer.append(&event) {
+            Ok(_) => count += 1,
+            Err(agentpcap_ledger::LedgerError::Duplicate(_)) => {
+                // the coexistence dedupe: the covered flow exists, the
+                // face continues and states the skip
+                eprintln!("agentpcap record: the dedupe skipped event {n}: the event's dedup key already rides the ledger");
+                continue;
+            }
+            Err(e) => {
+                eprintln!("agentpcap record: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
     eprintln!("agentpcap record: {count} record(s) -> {}", path.display());
     ExitCode::SUCCESS
@@ -144,88 +184,22 @@ fn report(path: PathBuf) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn print_sessions(view: Vec<Value>) -> std::io::Result<()> {
-    report::print_sessions(view)
-}
-
-/// The gate stream: the ledger's events to stdout as JSON Lines, in
-/// lossless order; `--follow` keeps streaming the appends after the
-/// existing segment. The read logs as agentpcap.export.
-fn export(path: PathBuf, follow: bool) -> ExitCode {
-    let stdout = std::io::stdout();
-    let dump = |out: &mut std::io::StdoutLock, reader: &mut LedgerReader| -> std::io::Result<()> {
-        for rec in reader.records() {
-            let line = serde_json::to_string(rec).unwrap_or_default();
-            writeln!(out, "{line}")?;
-        }
-        out.flush()
-    };
-    let mut reader = match LedgerReader::open(&path, "agentpcap.export") {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("agentpcap export: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut out = stdout.lock();
-    if dump(&mut out, &mut reader).is_err() {
-        return ExitCode::FAILURE;
-    }
-    let before = reader.len();
-    drop(reader);
-    if !follow {
-        return ExitCode::SUCCESS;
-    }
-    // the follow: poll the file's growth, stream the new records in
-    // order, stay until the consumer closes the stream
-    let mut streamed = before;
-    loop {
-        std::thread::sleep(Duration::from_millis(200));
-        let Ok(mut reader) = LedgerReader::open(&path, "agentpcap.export") else {
-            return ExitCode::FAILURE;
-        };
-        let len = reader.len();
-        if len == streamed {
-            drop(reader);
-            continue;
-        }
-        let records = reader.records();
-        for rec in records.iter().skip(streamed) {
-            let line = serde_json::to_string(rec).unwrap_or_default();
-            if writeln!(out, "{line}").is_err() {
-                // the consumer closed the stream: a clean end
-                return ExitCode::SUCCESS;
-            }
-        }
-        let _ = out.flush();
-        streamed = len;
-        drop(reader);
-    }
-}
-
-fn diff(before: PathBuf, after: PathBuf) -> ExitCode {
-    let events = match diff::drift(&before, &after) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("agentpcap diff: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    for e in &events {
-        if serde_json::to_writer(&mut out, e).is_err() || writeln!(out).is_err() {
-            return ExitCode::FAILURE;
-        }
-    }
-    let _ = out.flush();
-    ExitCode::SUCCESS
-}
-
 /// The tap: load the probe, drain the queue, classify, reassemble,
 /// ledger. The classified frames feed the reassembler; the reassembled
 /// session events land in the ledger one per session event.
 fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
+    // `--duration 0` is the service face: the capture runs unbounded
+    // until the unit stops it. The default face stays the 60-second
+    // window the alpha1 CLI promised.
+    let unbounded = duration_secs == 0;
+    // the stop face: the unit's SIGTERM (and Ctrl-C) marks the stop.
+    // The loop breaks and the drain flushes every still-pending
+    // request with the no-response face — a stop loses nothing.
+    STOP_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        libc::signal(libc::SIGTERM, on_stop as *const () as usize);
+        libc::signal(libc::SIGINT, on_stop as *const () as usize);
+    }
     let mut bpf = match aya::Bpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
@@ -331,9 +305,24 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
         .unwrap_or_default();
     let mut reassembler = Reassembler::new(host.clone(), Mode::Attributed, "tap".into());
     let mut seq: u64 = 0;
-    let deadline = Instant::now() + Duration::from_secs(duration_secs);
+    let start = Instant::now();
+    let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
-    while Instant::now() < deadline {
+    while !expired() && !STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // the idle face: the sweep expires stale parked requests (they
+        // ride the no-response face once) and idle sessions - the
+        // deployed service never grows its in-memory faces without
+        // limit
+        for ev in reassembler.sweep() {
+            if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
+                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                    eprintln!("agentpcap tap: the dedupe skipped the sweep event: its session event already rides the ledger");
+                } else {
+                    eprintln!("agentpcap tap: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         match queue.pop(0) {
             Ok(s) => {
                 seq += 1;
@@ -434,6 +423,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             if let Err(e) =
                                 writer.append(&serde_json::to_value(&ev).unwrap())
                             {
+                                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                                    eprintln!("agentpcap tap: the dedupe skipped the event: its session event already rides the ledger");
+                                    continue;
+                                }
                                 eprintln!("agentpcap tap: {e}");
                                 return ExitCode::FAILURE;
                             }
@@ -455,15 +448,25 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
                             protocol_version: None,
                             session_id: None,
                             peer: resolved.clone(),
-                            dedup: format!("{resolved}:{seq}"),
+                            dedup: format!(
+                                "{resolved}:t:{:016x}",
+                                fnv64(payload_bytes)
+                            ),
                             payload: None,
                             evidence: Some(evidence),
                             source: "tap".into(),
                             schema_version: "1.0".into(),
                         };
                         if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
-                            eprintln!("agentpcap tap: {e}");
-                            return ExitCode::FAILURE;
+                            if matches!(
+                                e,
+                                agentpcap_ledger::LedgerError::Duplicate(_)
+                            ) {
+                                eprintln!("agentpcap tap: the dedupe skipped the event: its session event already rides the ledger");
+                            } else {
+                                eprintln!("agentpcap tap: {e}");
+                                return ExitCode::FAILURE;
+                            }
                         }
                     }
                 }
@@ -476,8 +479,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
     // silently drops it
     for ev in reassembler.flush() {
         if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
-            eprintln!("agentpcap tap: {e}");
-            return ExitCode::FAILURE;
+            if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                eprintln!("agentpcap tap: the dedupe skipped the flush event: its session event already rides the ledger");
+            } else {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
@@ -490,7 +497,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64) -> ExitCode {
 /// read failure is fatal (a zero token makes the sentinel guessable).
 /// /dev/urandom never ends, so the request is a bounded exact read.
 fn random_token() -> Result<String, std::io::Error> {
-    use std::io::Read;
+    use std::io::{Read, Seek};
     let mut b = [0u8; 8];
     // three bounded attempts: an /dev/urandom hiccup is transient, an
     // unexplained failure stays fatal (fail-closed)
@@ -507,4 +514,100 @@ fn random_token() -> Result<String, std::io::Error> {
         }
     }
     Err(last.unwrap())
+}
+
+fn print_sessions(view: Vec<Value>) -> std::io::Result<()> {
+    report::print_sessions(view)
+}
+
+/// The gate stream: the ledger's events to stdout as JSON Lines, in
+/// lossless order; `--follow` keeps streaming the appends after the
+/// existing segment. The read logs as agentpcap.export.
+fn export(path: PathBuf, follow: bool) -> ExitCode {
+    let stdout = std::io::stdout();
+    let dump = |out: &mut std::io::StdoutLock, reader: &mut LedgerReader| -> std::io::Result<()> {
+        for rec in reader.records() {
+            let line = serde_json::to_string(rec).unwrap_or_default();
+            writeln!(out, "{line}")?;
+        }
+        out.flush()
+    };
+    let mut reader = match LedgerReader::open(&path, "agentpcap.export") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("agentpcap export: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = stdout.lock();
+    if dump(&mut out, &mut reader).is_err() {
+        return ExitCode::FAILURE;
+    }
+    if !follow {
+        return ExitCode::SUCCESS;
+    }
+    // the follow: a position face — the file reads from the last
+    // offset, only complete lines stream, and an unfinished tail waits
+    // for its newline (the recorder writes one buffer per record, but
+    // a reader can still land mid-write). The access log logs once, at
+    // the open above; the idle polls parse nothing.
+    let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let Ok(mut f) = std::fs::File::open(&path) else {
+            return ExitCode::FAILURE;
+        };
+        use std::io::{Read, Seek};
+        let len = f.metadata().map(|m| m.len()).unwrap_or(pos);
+        if len <= pos {
+            continue;
+        }
+        f.seek(std::io::SeekFrom::Start(pos)).ok();
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).is_err() {
+            return ExitCode::FAILURE;
+        }
+        let text = String::from_utf8_lossy(&buf);
+        // only COMPLETE lines stream; a trailing partial waits
+        let mut complete = text.as_ref();
+        if !text.ends_with('\n') {
+            match text.rfind('\n') {
+                Some(i) => complete = &text[..=i],
+                None => continue, // nothing complete arrived
+            }
+        }
+        for line in complete.lines() {
+            // a complete malformed line never streams (fail-closed on
+            // the same face the verify chain uses); the caller sees it
+            if serde_json::from_str::<Value>(line).is_err() {
+                eprintln!("agentpcap export: the appended line is not valid JSON: {line}");
+                return ExitCode::FAILURE;
+            }
+            if writeln!(out, "{line}").is_err() {
+                // the consumer closed the stream: a clean end
+                return ExitCode::SUCCESS;
+            }
+        }
+        pos += complete.len() as u64;
+        let _ = out.flush();
+    }
+}
+
+fn diff(before: PathBuf, after: PathBuf) -> ExitCode {
+    let events = match diff::drift(&before, &after) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("agentpcap diff: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for e in &events {
+        if serde_json::to_writer(&mut out, e).is_err() || writeln!(out).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
+    let _ = out.flush();
+    ExitCode::SUCCESS
 }

@@ -33,11 +33,9 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
     // The sessions of the two sets key by the server face when present
     // (the operator's per-server drift), else by the session id face.
     let key = |v: &Value| -> String {
-        if v["server"].is_string() {
-            format!("server:{}", v["server"].as_str().unwrap_or_default())
-        } else {
-            format!("session:{}", v["session_id"].as_str().unwrap_or_default())
-        }
+        // the session face keys the diff: several peers run the same
+        // server software, and every session keeps its own drift face
+        format!("session:{}", v["session_id"].as_str().unwrap_or_default())
     };
     let before_map: std::collections::BTreeMap<String, Value> = before
         .iter()

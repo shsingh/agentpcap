@@ -64,7 +64,7 @@ fn r101_the_initialize_pair_merges_into_one_init_event() {
     );
     assert_eq!(ev.peer, "pipe-pair:1001:2002");
     assert_eq!(ev.session_id.as_deref(), Some("pipe-pair:1001:2002"));
-    assert_eq!(ev.dedup, "stdio-pipe:pipe-pair:1001:2002:init:1");
+    assert!(ev.dedup.starts_with("stdio-pipe:pipe-pair:1001:2002:init:1@"));
     let evidence = ev.evidence.as_ref().unwrap();
     assert!(
         evidence.contains(&"reassembled:init".to_string())
