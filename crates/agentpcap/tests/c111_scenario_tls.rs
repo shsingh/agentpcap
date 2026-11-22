@@ -19,6 +19,15 @@ fn bin() -> Command {
 fn c111_the_tls_scenario_answers_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
+    // the run-unique marker: the tempdir's own name — the reply's
+    // content ties to THIS run (tls-<run>), so the reply-face assert
+    // never satisfies on another record
+    let run = dir
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("the tempdir name stays utf8")
+        .to_string();
 
     // the tap: three-second window, attributed mode (the default)
     let mut tap = bin()
@@ -63,7 +72,7 @@ fn c111_the_tls_scenario_answers_the_ledger() {
     let mut server = Command::new("python3")
         .env("AGENTPCAP_TLS_CERT", &cert_path)
         .env("AGENTPCAP_TLS_KEY", &key_path)
-        .args(["-u", &tmp_fixture, "server", "0", "c111"])
+        .args(["-u", &tmp_fixture, "server", "0", &run])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -75,7 +84,7 @@ fn c111_the_tls_scenario_answers_the_ledger() {
         .unwrap_or_default();
     eprintln!("c111 receipt: server port={port}");
     let client = Command::new("python3")
-        .args(["-u", &tmp_fixture, "client", &port, "c111"])
+        .args(["-u", &tmp_fixture, "client", &port, &run])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -106,11 +115,7 @@ fn c111_the_tls_scenario_answers_the_ledger() {
                 return false;
             }
             serde_json::to_string(r)
-                .map(|s| {
-                    s.contains(&port_str)
-                        || s.contains("\"c111\"")
-                        || s.contains("\"c113\"")
-                })
+                .map(|s| s.contains(&port_str) || s.contains(&run))
                 .unwrap_or(false)
         })
         .collect();
@@ -174,9 +179,10 @@ fn c111_the_tls_scenario_answers_the_ledger() {
         return;
     };
     assert_eq!(call["tool_name"].as_str(), Some("fetch"));
+    let want = format!("tls-{run}");
     assert_eq!(
         call["payload"]["result"]["content"][0]["text"],
-        "tls-hello",
+        want,
         "the tool result rides the TLS session"
     );
 }
