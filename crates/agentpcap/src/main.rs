@@ -706,22 +706,14 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             // and the five-tuple resolves through /proc/net (ADR-0005).
             // the transport face rides the resolver: a UDP connection
             // is udp, a TCP one tcp — the tap never guesses the class
-            let (transport, resolved, skip): (&'static str, Option<ResolvedPeer>, bool) =
+            let (transport, resolved): (&'static str, Option<ResolvedPeer>) =
                 if class == "pipe" {
                     let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
-                    match pipe_fd_face(&fd_path, machine_pid, s.fd) {
-                        // the NotPipe face: the fd names a live file —
-                        // never pipe traffic, the sample never feeds
-                        // (the #64 sweep face: a candidate write to a
-                        // file lands no channel-less record)
-                        PipeFdFace::NotPipe => (agentpcap_collector::TRANSPORT_PIPE, None, true),
-                        PipeFdFace::Dead => (agentpcap_collector::TRANSPORT_PIPE, None, false),
-                        PipeFdFace::Pipe(channel) => (
-                            agentpcap_collector::TRANSPORT_PIPE,
-                            Some(ResolvedPeer::Pipe { channel }),
-                            false,
-                        ),
-                    }
+                    (
+                        agentpcap_collector::TRANSPORT_PIPE,
+                        pipe_fd_channel(&fd_path, machine_pid, s.fd)
+                            .map(|channel| ResolvedPeer::Pipe { channel }),
+                    )
                 } else if class == "tls" {
                     // the TLS face (ADR-0006): the fd carries no socket
                     // face (the uprobe hands the buffer, not the fd) —
@@ -732,18 +724,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                     // reply binds ITS request through the remote-end
                     // face, never the first parked one
                     match agentpcap_collector::scan_connected_socket(machine_pid) {
-                        Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp)), false),
-                        None => ("socket-unresolved", None, false),
+                        Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp))),
+                        None => ("socket-unresolved", None),
                     }
                 } else {
                     match agentpcap_collector::resolve_socket_peer(machine_pid, s.fd) {
-                        Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp)), false),
-                        None => ("socket-unresolved", None, false),
+                        Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp))),
+                        None => ("socket-unresolved", None),
                     }
                 };
-            if skip {
-                continue;
-            }
             let died_unresolved = resolved.is_none();
             let resolved_face = resolved.clone();
             let resolved = resolved
@@ -1040,38 +1029,29 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
 /// `pipe:[<inode>]` names the channel; a resolvable fd naming anything
 /// else is live non-pipe traffic and never records; a failed lookup
 /// (the writer died inside the pop window) keys the record honestly
-/// unresolved with its evidence. The three outcomes ride
-/// [`PipeFdFace`]: the caller drops a `NotPipe` sample before it feeds.
-enum PipeFdFace {
-    Pipe(String),
-    NotPipe,
-    Dead,
-}
-
-fn pipe_fd_face(fd_path: &str, machine_pid: u32, fd: u32) -> PipeFdFace {
-    let Some(link) = (0..5)
+/// unresolved with its evidence.
+fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
+    (0..5)
         .find_map(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(2));
             }
             std::fs::read_link(fd_path).ok()
         })
-    else {
-        return PipeFdFace::Dead;
-    };
-    let text = link.to_string_lossy().to_string();
-    match text
-        .strip_suffix(']')
-        .and_then(|rest| rest.strip_prefix("pipe:["))
-    {
-        Some(inode) => PipeFdFace::Pipe(format!("pipe:{inode}")),
-        _ => {
-            eprintln!(
-                "agentpcap tap: skip: pid={machine_pid} fd={fd} link={text}: the fd names no pipe"
-            );
-            PipeFdFace::NotPipe
-        }
-    }
+        .map(|l| {
+            let text = l.to_string_lossy().to_string();
+            match text
+                .strip_suffix(']')
+                .and_then(|rest| rest.strip_prefix("pipe:["))
+            {
+                Some(inode) => format!("pipe:{inode}"),
+                _ => {
+                    eprintln!("agentpcap tap: skip: pid={machine_pid} fd={fd} link={text}");
+                    String::from("skipped")
+                }
+            }
+        })
+        .filter(|p| p != "skipped")
 }
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).

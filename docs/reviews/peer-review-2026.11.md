@@ -81,10 +81,15 @@ five still-open threads disposition here.
   tie (the exact ids, the server name, the tool list, the result text)
   rides every C1xx cell.
 - **PR #64 — `main.rs`, "Non-pipe writes are still recorded":**
-  superseded by the wire redesign. A non-pipe fd resolves through the
-  ADR-0005 socket resolver; an unresolvable fd keys `socket-unresolved`
-  with `fd-unresolved-at-pop` evidence — first-class, never a bogus
-  pipe value.
+  the remaining gap stands, described honestly: a class-pipe sample
+  whose fd names a live file keys `stdio-pipe` with
+  `fd-unresolved-at-pop` evidence through the alpha1 fallback — the
+  pipe path does not yet distinguish a file fd from a dead writer.
+  The fix (a three-face `PipeFdFace` resolve: Pipe / NotPipe / Dead,
+  the NotPipe face drops the sample) rides
+  [#85](https://github.com/shsingh/agentpcap/issues/85) with its cell;
+  the collect face is offset-robust before it rides the serial suite
+  (the p003 known face: the calibration offset drifts between runs).
 - **PR #64 — `main.rs`, "Messages name the wrong pipe" (fd reuse):**
   accepted and documented inside ADR-0004's pop-time race family. The
   fd may close and its number may ride a different file inside the pop
@@ -102,6 +107,7 @@ five still-open threads disposition here.
 
 ### The verdict
 
-No open review bot thread blocks the `2026.01-alpha2` gate: two rides
-documented races the specs already declare (ADR-0004, issue #83), one
-face fixed in this audit PR, two superseded by merged redesign.
+No open review bot thread blocks the `2026.01-alpha2` gate: two ride
+documented races the specs declare (ADR-0004, issue #83), two carry
+follow-up slices with their red receipts and their cells (#85, and the
+file-write drop face), and one face is fixed in this audit PR (C009).
