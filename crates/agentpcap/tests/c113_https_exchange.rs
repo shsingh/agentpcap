@@ -54,10 +54,20 @@ fn c113_the_https_framed_call_answers_the_ledger() {
 
     std::thread::sleep(Duration::from_millis(1200));
 
+    // the run-unique marker: the tempdir's own name — the reply's
+    // content ties to THIS run, every other record in the ledger (a
+    // dead-buffer capture, the #83 class) fails the tie
+    let run = dir
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("the tempdir name stays utf8")
+        .to_string();
+
     let mut server = Command::new("python3")
         .env("AGENTPCAP_TLS_CERT", cert.to_str().unwrap())
         .env("AGENTPCAP_TLS_KEY", key.to_str().unwrap())
-        .args(["-u", &tmp_fixture, "server", "0", "c113", "http"])
+        .args(["-u", &tmp_fixture, "server", "0", &run, "http"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -69,7 +79,7 @@ fn c113_the_https_framed_call_answers_the_ledger() {
         .unwrap_or_default();
     eprintln!("c113 receipt: server port={port}");
     let client = Command::new("python3")
-        .args(["-u", &tmp_fixture, "client", &port, "c113", "http"])
+        .args(["-u", &tmp_fixture, "client", &port, &run, "http"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -99,11 +109,7 @@ fn c113_the_https_framed_call_answers_the_ledger() {
                 return false;
             }
             serde_json::to_string(r)
-                .map(|s| {
-                    s.contains(&port_str)
-                        || s.contains("\"c111\"")
-                        || s.contains("\"c113\"")
-                })
+                .map(|s| s.contains(&port_str) || s.contains(&run))
                 .unwrap_or(false)
         })
         .collect();
@@ -160,24 +166,38 @@ fn c113_the_https_framed_call_answers_the_ledger() {
         joined,
         "the chunked reply's chunked-join evidence rides this run's ledger"
     );
-    // the content face: the chunked decode lands the reply's JSON
-    // verbatim — a dead-buffer capture (the #83 class) rides the wrong
-    // content and fails here
-    let content = text
+    // the reply's capture proof + content tie to ONE row: the
+    // chunked-join face and the run-unique reply text (tls-<run>)
+    // must ride the same record — no unrelated reply satisfies the
+    // tie (the reviewer face), and a dead-buffer capture (the #83
+    // class) rides the wrong content and fails
+    let reply_row = text
         .lines()
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .any(|r| r["payload"]["result"]["content"][0]["text"].as_str() == Some("tls-hello"));
+        .find(|r| {
+            r["evidence"]
+                .as_array()
+                .map(|e| {
+                    e.iter().any(|x| x == "chunked-join")
+                        && e.iter().any(|x| x == "tls-boundary")
+                })
+                .unwrap_or(false)
+                && r["payload"]["result"]["content"][0]["text"].as_str()
+                    == Some(run.as_str())
+        });
     assert!(
-        content,
-        "the chunked reply's tls-hello content rides this run's ledger"
+        reply_row.is_some(),
+        "the chunked reply's chunked-join face and tls-{run} content tie one ledger row"
     );
-    if let Some(text) = call["payload"]["result"]["content"][0]["text"].as_str() {
-        assert_eq!(text, "tls-hello", "the framed reply rides the merged record");
-        eprintln!("c113 receipt: reply content tls-hello rides the ledger");
+    let want = format!("tls-{run}");
+    if let Some(text_val) = call["payload"]["result"]["content"][0]["text"].as_str() {
+        assert_eq!(text_val, want, "the framed reply rides the merged record");
+        eprintln!("c113 receipt: reply content {want} rides the ledger");
     } else {
         // the honest race fallback (ADR-0004): the pair keyed
-        // unresolved on the dev-VM pid-space face; the chunked-join +
-        // content faces prove the reply reached the ledger
+        // unresolved on the dev-VM pid-space face; the reply row's own
+        // capture proof + run-unique content prove the reply reached
+        // the ledger
         eprintln!("c113 note: the reply rides the race fallback (ADR-0004); the capture faces landed");
     }
     assert_eq!(call["mode"], "attributed", "the HTTPS face captures attributed");
