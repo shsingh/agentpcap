@@ -82,7 +82,25 @@ fn c100_tap_ledgers_the_classified_flow() {
     }
     assert!(!views.is_empty(), "the ledger carries the flow");
 
-    let view = views.first().expect("one session view line");
+    // the scenario's session rides the raw ledger rows: this test's
+    // pid wrote the frames, and rows without that pid (the host's own
+    // pipe traffic) never select the assertions' row
+    let scenario_pid = u64::from(std::process::id());
+    let rec = std::fs::read_to_string(&ledger).expect("the ledger reads");
+    let mine: Vec<serde_json::Value> = rec
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|r| r["pid"].as_u64() == Some(scenario_pid))
+        .collect();
+    let own_session = mine
+        .first()
+        .and_then(|r| r["session_id"].as_str())
+        .map(String::from)
+        .expect("the scenario's session lands in the ledger");
+    let view = views
+        .iter()
+        .find(|v| v["session_id"].as_str() == Some(own_session.as_str()))
+        .expect("the scenario's session answers in the report");
     assert_eq!(
         view["invocations"].as_u64(),
         Some(1),

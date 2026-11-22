@@ -176,6 +176,14 @@ fn c101_the_stdio_scenario_answers_the_ledger() {
         .lines()
         .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
+    // the report rows filter to this scenario's session: the tap also
+    // records the host's other pipe traffic, and those rows never ride
+    // the assertions (the raw ledger rows filter by the scenario pid
+    // the same way the checks above do)
+    let answered: Vec<serde_json::Value> = answered
+        .into_iter()
+        .filter(|v| v["session_id"].as_str() == Some(session.as_str()))
+        .collect();
     eprintln!("c101 report receipt: sessions={}", answered.len());
     assert_eq!(answered.len(), 1, "the report folds one session view line");
     let view = &answered[0];

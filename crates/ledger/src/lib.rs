@@ -99,7 +99,6 @@ pub(crate) fn chain_of(lines: &[&str]) -> Result<(), LedgerError> {
             if !got.is_empty() && !valid_carry {
                 return Err(LedgerError::ChainBreak(0));
             }
-            expected = got;
         } else if got != expected {
             return Err(LedgerError::ChainBreak(i));
         }
@@ -177,7 +176,7 @@ impl DedupWindow {
 
     fn retain_last(&mut self, keys: Vec<String>) {
         let start = keys.len().saturating_sub(self.budget);
-        for k in keys[start..].to_vec() {
+        for k in keys[start..].iter().cloned() {
             self.insert(k);
         }
     }

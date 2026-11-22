@@ -256,7 +256,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
         libc::signal(libc::SIGTERM, on_stop as *const () as usize);
         libc::signal(libc::SIGINT, on_stop as *const () as usize);
     }
-    let mut bpf = match aya::Bpf::load(BPF_OBJ) {
+    let mut bpf = match aya::Ebpf::load(BPF_OBJ) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("agentpcap tap: probe load failed: {e}");
@@ -526,9 +526,8 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
             let machine_pid = machine_pid as u32;
             let payload_bytes =
                 &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
-            match classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) {
-                Decision::Other => continue,
-                _ => (),
+            if classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) == Decision::Other {
+                continue;
             }
             // The channel face, per class. The pipe class: the write's
             // fd must name a pipe; the pipe inode is the channel's pair
@@ -719,7 +718,7 @@ fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
                 }
             }
         })
-        .and_then(|p| if p == "skipped" { None } else { Some(p) })
+        .filter(|p| p != "skipped")
 }
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).
@@ -728,7 +727,7 @@ fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
 /// read failure is fatal (a zero token makes the sentinel guessable).
 /// /dev/urandom never ends, so the request is a bounded exact read.
 fn random_token() -> Result<String, std::io::Error> {
-    use std::io::{Read, Seek};
+    use std::io::Read;
     let mut b = [0u8; 8];
     // three bounded attempts: an /dev/urandom hiccup is transient, an
     // unexplained failure stays fatal (fail-closed)
@@ -753,25 +752,45 @@ fn print_sessions(view: Vec<Value>) -> std::io::Result<()> {
 
 /// The gate stream: the ledger's events to stdout as JSON Lines, in
 /// lossless order; `--follow` keeps streaming the appends after the
-/// existing segment. The read logs as agentpcap.export.
+/// existing segment. The read logs as agentpcap.export. The stream
+/// carries the ledger's ORIGINAL line bytes: a consumer re-verifying
+/// the chain hashes the same bytes the recorder shipped — a
+/// re-serialization would change a line's bytes and break the next
+/// record's `prev` hash against it.
 fn export(path: PathBuf, follow: bool) -> ExitCode {
+    // the chain verification and the access log ride the reader open
+    if let Err(e) = LedgerReader::open(&path, "agentpcap.export") {
+        eprintln!("agentpcap export: {e}");
+        return ExitCode::FAILURE;
+    }
     let stdout = std::io::stdout();
-    let dump = |out: &mut std::io::StdoutLock, reader: &mut LedgerReader| -> std::io::Result<()> {
-        for rec in reader.records() {
-            let line = serde_json::to_string(rec).unwrap_or_default();
-            writeln!(out, "{line}")?;
-        }
-        out.flush()
-    };
-    let mut reader = match LedgerReader::open(&path, "agentpcap.export") {
-        Ok(r) => r,
+    let mut out = stdout.lock();
+    // The initial position rides ONE read from byte zero: the complete
+    // lines stream now and `pos` answers from the same bytes — an
+    // append that lands while the dump drains never slips between a
+    // records() call and a later metadata read.
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
         Err(e) => {
             eprintln!("agentpcap export: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let mut out = stdout.lock();
-    if dump(&mut out, &mut reader).is_err() {
+    let mut buf = Vec::new();
+    use std::io::Read as _;
+    if f.read_to_end(&mut buf).is_err() {
+        return ExitCode::FAILURE;
+    }
+    drop(f);
+    let mut pos = match stream_complete(&mut out, &buf, true) {
+        Ok(n) => n,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            eprintln!("agentpcap export: a ledger line is not valid JSON");
+            return ExitCode::FAILURE;
+        }
+        Err(_) => return ExitCode::FAILURE,
+    };
+    if out.flush().is_err() {
         return ExitCode::FAILURE;
     }
     if !follow {
@@ -779,49 +798,139 @@ fn export(path: PathBuf, follow: bool) -> ExitCode {
     }
     // the follow: a position face — the file reads from the last
     // offset, only complete lines stream, and an unfinished tail waits
-    // for its newline (the recorder writes one buffer per record, but
-    // a reader can still land mid-write). The access log logs once, at
-    // the open above; the idle polls parse nothing.
-    let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    // for its newline. The access log logs once, at the open above;
+    // the idle polls parse nothing. File identity rides the inode: a
+    // ledger rotation renames the closed segment and opens a fresh
+    // file, and the gate stream drains the closed segment's tail from
+    // the old position before the fresh segment streams from zero.
+    let mut ino = std::fs::metadata(&path)
+        .map(|m| std::os::unix::fs::MetadataExt::ino(&m))
+        .unwrap_or(0);
     loop {
         std::thread::sleep(Duration::from_millis(200));
-        let Ok(mut f) = std::fs::File::open(&path) else {
+        let Ok(meta) = std::fs::metadata(&path) else {
             return ExitCode::FAILURE;
         };
-        use std::io::{Read, Seek};
-        let len = f.metadata().map(|m| m.len()).unwrap_or(pos);
+        let cur_ino = std::os::unix::fs::MetadataExt::ino(&meta);
+        let len = meta.len();
+        if cur_ino != ino {
+            // the ledger rotated: the closed segment's tail drains
+            // from the segment file, then the fresh one starts at zero
+            let closed = PathBuf::from(format!("{}.1", path.display()));
+            match std::fs::read(&closed) {
+                Ok(tail) => {
+                    if (tail.len() as u64) > pos {
+                        if let Err(e) = stream_complete(&mut out, &tail[pos as usize..], false) {
+                            match e.kind() {
+                                // the consumer closed the stream mid-drain:
+                                // a clean end on either shutdown face
+                                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::WriteZero => {
+                                    return ExitCode::SUCCESS
+                                }
+                                _ => return ExitCode::FAILURE,
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("agentpcap export: the closed segment read failed: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            let _ = out.flush();
+            pos = 0;
+            ino = cur_ino;
+            continue;
+        }
         if len <= pos {
             continue;
         }
-        f.seek(std::io::SeekFrom::Start(pos)).ok();
+        let Ok(mut f) = std::fs::File::open(&path) else {
+            return ExitCode::FAILURE;
+        };
+        use std::io::Seek;
+        if f.seek(std::io::SeekFrom::Start(pos)).is_err() {
+            return ExitCode::FAILURE;
+        }
         let mut buf = Vec::new();
         if f.read_to_end(&mut buf).is_err() {
             return ExitCode::FAILURE;
         }
-        let text = String::from_utf8_lossy(&buf);
-        // only COMPLETE lines stream; a trailing partial waits
-        let mut complete = text.as_ref();
-        if !text.ends_with('\n') {
-            match text.rfind('\n') {
-                Some(i) => complete = &text[..=i],
-                None => continue, // nothing complete arrived
+        match stream_complete(&mut out, &buf, true) {
+            Ok(n) => {
+                pos += n;
+                let _ = out.flush();
             }
+            Err(e) => match e.kind() {
+                // the consumer closed the stream: a clean end. SIGPIPE
+                // on a closed gate lands as BrokenPipe on write_all; a
+                // permanently clogged pipe lands as WriteZero. Both
+                // are ordinary shutdown faces, never a failed export
+                std::io::ErrorKind::BrokenPipe => return ExitCode::SUCCESS,
+                std::io::ErrorKind::WriteZero => return ExitCode::SUCCESS,
+                std::io::ErrorKind::InvalidData => {
+                    // a complete malformed line never streams: fail-closed
+                    eprintln!("agentpcap export: an appended line is not valid JSON");
+                    return ExitCode::FAILURE;
+                }
+                _ => return ExitCode::FAILURE,
+            },
         }
-        for line in complete.lines() {
-            // a complete malformed line never streams (fail-closed on
-            // the same face the verify chain uses); the caller sees it
-            if serde_json::from_str::<Value>(line).is_err() {
-                eprintln!("agentpcap export: the appended line is not valid JSON: {line}");
-                return ExitCode::FAILURE;
-            }
-            if writeln!(out, "{line}").is_err() {
-                // the consumer closed the stream: a clean end
-                return ExitCode::SUCCESS;
-            }
-        }
-        pos += complete.len() as u64;
-        let _ = out.flush();
     }
+}
+
+/// Stream `buf`'s complete lines verbatim (each byte rides); the
+/// return value is the consumed byte count — the trailing partial tail
+/// waits for its newline. A complete malformed line never streams.
+/// With `lenient_tail` unset, any trailing garbage is fatal.
+fn stream_complete(
+    out: &mut std::io::StdoutLock,
+    buf: &[u8],
+    lenient_tail: bool,
+) -> std::io::Result<u64> {
+    let mut consumed = 0u64;
+    let mut start = 0usize;
+    let mut complete_end = buf.len();
+    if !buf.ends_with(b"\n") {
+        match buf.iter().rposition(|b| *b == b'\n') {
+            Some(i) => complete_end = i + 1,
+            // nothing complete arrived; the tail waits (or is fatal
+            // for a closed read)
+            None => {
+                if lenient_tail && !buf.is_empty() {
+                    eprintln!("agentpcap export: the tail waits for its newline");
+                    return Ok(0);
+                }
+                if !std::str::from_utf8(buf).map(|s| s.trim().is_empty()).unwrap_or(false) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "the tail has no newline",
+                    ));
+                }
+                return Ok(0);
+            }
+        }
+    }
+    for i in 0..complete_end {
+        if buf[i] == b'\n' {
+            let line = &buf[start..i];
+            if serde_json::from_slice::<Value>(line).is_err() {
+                eprintln!(
+                    "agentpcap export: the line is not valid JSON: {}",
+                    String::from_utf8_lossy(line)
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the line is not valid JSON",
+                ));
+            }
+            out.write_all(line)?;
+            out.write_all(b"\n")?;
+            consumed = (i + 1) as u64;
+            start = i + 1;
+        }
+    }
+    Ok(consumed)
 }
 
 fn diff(before: PathBuf, after: PathBuf) -> ExitCode {

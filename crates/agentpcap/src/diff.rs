@@ -33,9 +33,14 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
     // The sessions of the two sets key by the server face when present
     // (the operator's per-server drift), else by the session id face.
     let key = |v: &Value| -> String {
-        // the session face keys the diff: several peers run the same
-        // server software, and every session keeps its own drift face
-        format!("session:{}", v["session_id"].as_str().unwrap_or_default())
+        // the (host, session) face keys the diff: several peers run
+        // the same server software, two nodes hold the same pid space,
+        // and every session keeps its own drift face
+        format!(
+            "session:{}@{}",
+            v["host"].as_str().unwrap_or_default(),
+            v["session_id"].as_str().unwrap_or_default()
+        )
     };
     let before_map: std::collections::BTreeMap<String, Value> = before
         .iter()
@@ -59,6 +64,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                     out.push(json!({
                         "ts": stamp(),
                         "kind": "tools-added",
+                        "host": a["host"],
                         "server": a["server"],
                         "session_id": a["session_id"],
                         "tools": list,
@@ -80,6 +86,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                     out.push(json!({
                         "ts": stamp(),
                         "kind": "tools-added",
+                        "host": a["host"],
                         "server": a["server"],
                         "session_id": a["session_id"],
                         "tools": added,
@@ -89,6 +96,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                     out.push(json!({
                         "ts": stamp(),
                         "kind": "tools-removed",
+                        "host": a["host"],
                         "server": a["server"],
                         "session_id": a["session_id"],
                         "tools": removed,
@@ -100,6 +108,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                             out.push(json!({
                                 "ts": stamp(),
                                 "kind": "tool-description-changed",
+                                "host": a["host"],
                                 "server": a["server"],
                                 "session_id": a["session_id"],
                                 "tool": n,
@@ -115,6 +124,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                     out.push(json!({
                         "ts": stamp(),
                         "kind": "server-rescoped",
+                        "host": a["host"],
                         "server": a["server"],
                         "session_id": a["session_id"],
                         "before": fb,
@@ -131,6 +141,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                         out.push(json!({
                             "ts": stamp(),
                             "kind": "server-rescoped",
+                            "host": a["host"],
                             "server": a["server"],
                             "session_id": a["session_id"],
                             "before": null,
@@ -152,6 +163,7 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
                 out.push(json!({
                     "ts": stamp(),
                     "kind": "tools-removed",
+                    "host": b["host"],
                     "server": b["server"],
                     "session_id": b["session_id"],
                     "tools": list,

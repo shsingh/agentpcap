@@ -78,7 +78,6 @@ pub fn verdict_case(paths: &[String]) -> &'static str {
                     }
                     _ => return "chain-broken",
                 }
-                expected = got;
             } else if got != expected {
                 return "chain-broken";
             }

@@ -280,13 +280,9 @@ pub fn classify_pipe_sample(pid: u32, ppid: u32, comm: &str, first_bytes: &[u8])
     let object = match serde_json::from_str::<serde_json::Value>(candidate) {
         Ok(v) => v,
         // A truncated sample (sample-first-N-bytes) must not guess.
-        Err(_) => {
-            return if sample.starts_with('{') {
-                Decision::AgentUnidentified
-            } else {
-                Decision::AgentUnidentified
-            };
-        }
+        // A truncated sample never guesses: agent-shaped stays the
+        // verdict face either way
+        Err(_) => return Decision::AgentUnidentified,
     };
     let Some(obj) = object.as_object() else {
         return Decision::AgentUnidentified;

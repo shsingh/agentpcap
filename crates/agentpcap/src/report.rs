@@ -14,16 +14,23 @@ pub fn sessions(ledger_path: &std::path::Path, actor: &str) -> Result<Vec<Value>
     let reader = LedgerReader::open(ledger_path, actor).map_err(|e| e.to_string())?;
     let mut views: Map<String, Value> = Map::new();
     for rec in reader.records() {
-        let session_key = rec["session_id"]
+        // the aggregation key rides (host, session_id): pipe session
+        // ids carry only process ids, and two collector nodes hold the
+        // same pid space — a merged operator ledger never folds two
+        // hosts' conversations into one row
+        let host_face = rec["host"].as_str().unwrap_or("").to_string();
+        let session_face = rec["session_id"]
             .as_str()
             .unwrap_or_else(|| rec["peer"].as_str().unwrap_or("unknown"))
             .to_string();
+        let session_key = format!("{host_face}|{session_face}");
         let view = views
             .entry(session_key.clone())
             .or_insert_with(|| {
                 json!({
+                    "host": rec["host"],
                     "peer": rec["peer"],
-                    "session_id": session_key,
+                    "session_id": session_face,
                     "transport": rec["transport"],
                     "mode": rec["mode"],
                     "server": null,
