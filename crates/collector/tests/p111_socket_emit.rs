@@ -15,7 +15,7 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
         .join("../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap");
     assert!(obj.is_file(), "P111 red: the bpf object is absent");
 
-    let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
+    let mut bpf = aya::Ebpf::load_file(&obj).expect("bpf load failed");
     let prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap_socket")
         .expect("the socket program missing from object")
@@ -48,10 +48,11 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
     let server = std::thread::spawn(move || {
         let (mut s, _) = listener.accept().expect("the accept");
         let mut buf = [0u8; 512];
-        s.read(&mut buf).unwrap_or(0);
+        let n = s.read(&mut buf).unwrap_or(0);
+        let _ = n;
     });
     let mut client = TcpStream::connect(addr).expect("the client connects");
-    client.write_all(line.as_bytes()).expect("the client sends");
+    client.write_all(line.into_bytes().as_slice()).expect("the client sends");
     std::thread::sleep(Duration::from_millis(300));
     drop(client);
     server.join().expect("the server joins");
@@ -66,7 +67,7 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
                     &s.first_bytes[..(s.len as usize).min(256)],
                 )
                 .to_string();
-                if text.contains(&marker) {
+                if text.contains(marker) {
                     eprintln!("p111 receipt: sample pid={} len={} payload={text}", s.pid, s.len);
                     return;
                 }

@@ -72,4 +72,5 @@ fn c005_export_follow_streams_appends_live() {
     drop(reader);
     drop(out);
     export.kill().expect("reap the follow stream");
+    let _ = export.wait();
 }

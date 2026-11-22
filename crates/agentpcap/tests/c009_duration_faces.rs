@@ -13,7 +13,7 @@ fn bin() -> PathBuf {
     env!("CARGO_BIN_EXE_agentpcap").into()
 }
 
-fn spawn_tap(ledger: &PathBuf, duration: &str) -> std::process::Child {
+fn spawn_tap(ledger: &std::path::Path, duration: &str) -> std::process::Child {
     Command::new(bin())
         .args(["tap", "--ledger", ledger.to_str().unwrap(), "--duration", duration])
         .stdout(Stdio::null())

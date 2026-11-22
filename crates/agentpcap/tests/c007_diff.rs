@@ -1,10 +1,11 @@
+use std::process::Command;
+
 // C007 — the diff: two report sets in, capability drift events out.
 // New tools, changed tool descriptions, removed tools and re-scoped
 // servers surface from ledger data. The read logs as actor = agentpcap.diff.
 // Spec: docs/spec.md#9-operator-cli.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agentpcap"))

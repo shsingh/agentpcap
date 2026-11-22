@@ -10,9 +10,9 @@
 use aya_ebpf::helpers::{
     bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_probe_read_user_buf,
 };
-use aya_ebpf::macros::{map, tracepoint};
+use aya_ebpf::macros::{map, tracepoint, uretprobe, uprobe};
 use aya_ebpf::maps::{Array, HashMap, Queue};
-use aya_ebpf::programs::TracePointContext;
+use aya_ebpf::programs::{ProbeContext, RetProbeContext, TracePointContext};
 
 /// Wire format: must match the collector crate's `PipeSample` exactly
 /// (const-locked on both sides at 48 bytes).
@@ -83,6 +83,7 @@ static mut CGROUP_SEEN: Array<u64> = Array::with_max_entries(1, 0);
 // the calibration sentinel, or `{` plus the `jsonrpc` member within the
 // first 40 bytes with the leading whitespace skipped.
 #[inline(always)]
+#[inline(never)]
 fn candidate(buf: *const u8, avail: usize) -> bool {
     unsafe {
         let mut sniff: [u8; 40] = [0u8; 40];
@@ -189,8 +190,13 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
             return 0;
         }
         if sniff.starts_with(b"agentpcap-c") {
-            // the calibration sentinel rides
+            // the calibration sentinel rides — its own admission face:
+            // the tap may sit outside the selected cgroup, and the
+            // sentinel is how the offset face learns at all
         } else {
+            if !cgroup_allowed() {
+                return 0;
+            }
             let mut j = 0usize;
             while j < 16 {
                 let c = sniff[j];
@@ -489,6 +495,217 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
         }
     }
     0
+}
+
+// The TLS-boundary tap (spec section 8/Modes, ADR-0006): uprobes on the
+// host TLS library's SSL_write and SSL_read capture the plaintext
+// before encryption. The plaintext bytes ride the same 272-byte wire
+// as one fd-less sample (the fd = 0 face): the peer resolves through
+// the writer's /proc fd scan, never the ssl struct. The class rides
+// the `tls_events` map.
+#[map(name = "tls_events")]
+static mut TLS_EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
+
+#[map(name = "tls_canary")]
+static mut TLS_CANARY: Array<u64> = Array::with_max_entries(6, 0);
+
+const SLOT_CGID: u32 = 4;
+const SLOT_PENDING_LOSS: u32 = 5;
+
+/// The parked TLS call: SSL_read_ex/SSL_write_ex carry their buffer at
+/// x1 and the accepted-count pointer at x3 — the count only answers at
+/// the RETURN face, so the entry never captures. The tgid rides the
+/// entry: slots identify their owner, a foreign collect never consumes
+/// another thread's park.
+#[repr(C, align(8))]
+pub struct SavedTls {
+    ubuf: u64,
+    wptr: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SavedTls>() == 16);
+
+#[map(name = "tls_pending")]
+static mut TLS_PENDING: HashMap<u64, SavedTls> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn agentpcap_tls_write(mut ctx: ProbeContext) -> i64 {
+    // SSL_write_ex(ssl, buf, num, *written): park the coordinates —
+    // the capture only collects at the return face, so a retried or
+    // failed write never parks a call before any byte is accepted
+    tls_park(&mut ctx)
+}
+
+#[uretprobe]
+pub fn agentpcap_tls_write_ret(ctx: RetProbeContext) -> i64 {
+    // the send face rides ppid 0 (the probe-face evidence keys send)
+    tls_collect(ctx.ret(), 0)
+}
+
+#[uprobe]
+pub fn agentpcap_tls_read(mut ctx: ProbeContext) -> i64 {
+    // SSL_read_ex(ssl, buf, num, *written): the buffer is EMPTY at
+    // entry — the destination never answers at the entry face, so the
+    // read only collects after the call fills it
+    tls_park(&mut ctx)
+}
+
+#[uretprobe]
+pub fn agentpcap_tls_read_ret(ctx: RetProbeContext) -> i64 {
+    // the receive face rides ppid 1 (the probe-face evidence keys it,
+    // the shared endpoint face rides it both ways)
+    tls_collect(ctx.ret(), 1)
+}
+
+/// The shared park: the cgroup gate rides before the parking (only the
+/// calibrated scope ever fills the pending map); a lost park means a
+/// lost observation and stays visible in the canary.
+fn tls_park(ctx: &mut ProbeContext) -> i64 {
+    unsafe {
+        // the invoke counter lives before the cgroup gate, and the
+        // cgroup id rides its own slot (it never overwrites the count)
+        if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_INVOKE) {
+            *slot += 1;
+        }
+        let id = bpf_get_current_cgroup_id();
+        let _ = TLS_CANARY.set(SLOT_CGID, &id, 0);
+        if !cgroup_allowed() {
+            return 0;
+        }
+        let ubuf: usize = match ctx.arg(1) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let wptr: usize = match ctx.arg(3) {
+            Some(v) => v,
+            None => return 0,
+        };
+        if ubuf == 0 || wptr == 0 {
+            return 0;
+        }
+        // the FULL pid_tgid keys the entry: two live threads own
+        // disjoint keys — their parks and collects never mix. A thread
+        // killed inside its call leaks its key; the tap sweeps dead
+        // pids out of the map periodically (the bounded-cleanup face)
+        let key = bpf_get_current_pid_tgid();
+        let saved = SavedTls {
+            ubuf: ubuf as u64,
+            wptr: wptr as u64,
+        };
+        if TLS_PENDING.insert(&key, &saved, 0).is_err() {
+            if let Some(slot_c) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+                *slot_c += 1;
+            }
+        }
+    }
+    0
+}
+
+/// The shared collect: the return value rides x0 at the return
+/// address (the EX faces answer 1 on success); the accepted count
+/// rides the caller's *written pointer. The capture bounds by the
+/// bytes the call ACCEPTED — never by the requested capacity, never
+/// at the entry face. The admission carries the JSON face AND the
+/// HTTP framed face: an HTTPS client rides headers and a JSON body
+/// in one buffer, and `POST ...` never passes the bare-JSON filter.
+fn tls_collect(ret: i32, is_read: u32) -> i64 {
+    let key = unsafe { bpf_get_current_pid_tgid() };
+    let entry = match unsafe { TLS_PENDING.get(&key) } {
+        Some(e) => SavedTls {
+            ubuf: e.ubuf,
+            wptr: e.wptr,
+        },
+        None => return 0,
+    };
+    unsafe {
+        let _ = TLS_PENDING.remove(&key);
+    }
+    let (ubuf, wptr) = (entry.ubuf, entry.wptr);
+    if !cgroup_allowed() {
+        return 0;
+    }
+    if ret != 1 {
+        // a failed or retried attempt collected nothing: the retry
+        // parks again and only the accepted bytes capture
+        return 0;
+    }
+    let count: u64 = match unsafe { aya_ebpf::helpers::bpf_probe_read_user(wptr as *const u64) } {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let take = (count as usize).min(PAYLOAD_BYTES_CAP as usize);
+    if take == 0 || ubuf == 0 {
+        return 0;
+    }
+    unsafe {
+        let buf = ubuf as *const u8;
+        // the admission faces read their own small frames (40 or 8
+        // bytes); the sample buffer reads once, directly into the wire
+        // struct — the collect frame never holds two byte arrays
+        if !candidate(buf, take) && !http_prefix(buf) {
+            return 0;
+        }
+        let mut sample = PipeSample {
+            pid: (key >> 32) as u32,
+            ppid: is_read,
+            len: take as u32,
+            fd: 0,
+            first_bytes: [0u8; 256],
+        };
+        if bpf_probe_read_user_buf(buf, &mut sample.first_bytes[..take]).is_err() {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_READ_FAIL) {
+                *slot += 1;
+            }
+            return 0;
+        }
+        if TLS_EVENTS.push(&sample, 0).is_ok() {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                *slot += 1;
+            }
+        } else if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+            *slot += 1;
+        }
+    }
+    0
+}
+
+/// The HTTP framing face: the method or status prefixes the body —
+/// the userspace classifier trims to the body's first brace, the
+/// boundary only needs the buffer admitted. Fixed 8-byte compares
+/// keep the verifier satisfied.
+#[inline(never)]
+fn http_prefix(buf: *const u8) -> bool {
+    let mut head = [0u8; 8];
+    unsafe {
+        if bpf_probe_read_user_buf(buf, &mut head).is_err() {
+            return false;
+        }
+    }
+    starts_with(head, b"POST", true)
+        || starts_with(head, b"GET", true)
+        || starts_with(head, b"PUT", true)
+        || starts_with(head, b"PATCH", false)
+        || starts_with(head, b"HEAD", true)
+        || starts_with(head, b"DELETE", false)
+        || starts_with(head, b"HTTP/", false)
+}
+
+#[inline(never)]
+fn starts_with(head: [u8; 8], m: &[u8], then_space: bool) -> bool {
+    if m.len() + usize::from(then_space) > head.len() {
+        return false;
+    }
+    let mut ok = true;
+    for (i, c) in m.iter().enumerate() {
+        if head[i] != *c {
+            ok = false;
+        }
+    }
+    if then_space {
+        ok && head[m.len()] == b' '
+    } else {
+        ok
+    }
 }
 
 #[panic_handler]

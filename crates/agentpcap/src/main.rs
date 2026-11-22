@@ -12,7 +12,7 @@ use agentpcap_ledger::{now_rfc3339, LedgerReader, LedgerWriter};
 use agentpcap_reassemble::{Frame, Reassembler};
 use aya::maps::Queue;
 use aya::programs::TracePoint;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -28,7 +28,7 @@ static BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(
     "/../agentpcap-ebpf/target/bpfel-unknown-none/release/agentpcap"
 ));
 
-const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>] [--cgroup <id>]\n       (--duration 0 runs the capture unbounded)";
+const USAGE: &str = "usage: agentpcap record --ledger <path> [--source <face>]\n       agentpcap report --ledger <path>\n       agentpcap tap --ledger <path> [--duration <seconds>] [--cgroup <id>] [--mode opaque]\n       (--duration 0 runs the capture unbounded; --mode opaque strips the payload content at the feed face)";
 
 /// The flag walker: `--flag <value>` pairs and standalone `--flag`
 /// switches. Misuse is the caller's exit-2 face.
@@ -134,6 +134,26 @@ fn main() -> ExitCode {
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(60),
                 cgroup,
+                // the mode face: attributed is the default (spec
+                // section 8); `--mode opaque` strips the payload
+                // content at the feed face. A supplied but invalid
+                // value takes the misuse face: silent broadening of
+                // the capture scope never survives an argument
+                match args.iter().position(|a| a == "--mode") {
+                    Some(i) => match args.get(i + 1).map(String::as_str) {
+                        Some("opaque") => Mode::Opaque,
+                        Some("attributed") => Mode::Attributed,
+                        Some(_) => {
+                            eprintln!("agentpcap: --mode needs attributed or opaque");
+                            return ExitCode::from(2);
+                        }
+                        None => {
+                            eprintln!("agentpcap: --mode needs a value");
+                            return ExitCode::from(2);
+                        }
+                    },
+                    None => Mode::Attributed,
+                },
             )
         }
         (Some("export"), Some(path)) => export(
@@ -243,7 +263,7 @@ fn report(path: PathBuf) -> ExitCode {
 /// The tap: load the probe, drain the queue, classify, reassemble,
 /// ledger. The classified frames feed the reassembler; the reassembled
 /// session events land in the ledger one per session event.
-fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCode {
+fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode) -> ExitCode {
     // `--duration 0` is the service face: the capture runs unbounded
     // until the unit stops it. The default face stays the 60-second
     // window the alpha1 CLI promised.
@@ -403,6 +423,101 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                 return ExitCode::FAILURE;
             }
         };
+    // The TLS-boundary collector (ADR-0006): the uprobes ride the host
+    // libssl's SSL_write_ex/SSL_read_ex (the face the host ssl module
+    // calls directly), sharing the calibration and the cgroup map. The
+    // ENTRY probes park the buffer coordinates; the RETURN probes
+    // (uretprobes on the same symbols) collect only the bytes the call
+    // reports as accepted.
+    let libssl = "/usr/lib/aarch64-linux-gnu/libssl.so.3";
+    let libssl_read = std::env::var("AGENTPCAP_TLS_LIBSSL_READ").unwrap_or_else(|_| libssl.to_string());
+    let tls_faces = ["agentpcap_tls_write", "agentpcap_tls_write_ret", "agentpcap_tls_read", "agentpcap_tls_read_ret"];
+    let tls_attach = mode != Mode::Opaque;
+    if mode == Mode::Opaque {
+        // the scope face: the spec (Section 3) limits the TLS-boundary
+        // collector to attributed capture — opaque never loads or
+        // attaches the boundary probes, the plaintext never enters the
+        // queue, and the face states why
+        eprintln!("agentpcap tap: the tls faces stay unavailable (opaque mode keeps the boundary unattributed)");
+    }
+    let mut attached_link_ids: Vec<aya::programs::uprobe::UProbeLinkId> = Vec::new();
+    let mut progs_tls: Vec<&'static str> = Vec::new();
+    for name in tls_faces {
+        if !tls_attach {
+            break;
+        }
+        progs_tls.push(name);
+        let prog: &mut aya::programs::UProbe = match bpf.program_mut(name).expect("tls program object exists").try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("agentpcap tap: {name} is not an uprobe");
+                return ExitCode::FAILURE;
+            }
+        };
+        let sym = if name.contains("write") {
+            "SSL_write_ex"
+        } else {
+            "SSL_read_ex"
+        };
+        // the dual-libssl face: the read pair's attach target may ride
+        // its own path (a host's read-side libssl differs from the
+        // write side; the rollback test faces it too)
+        let attach_path = if name.contains("write") {
+            libssl
+        } else {
+            libssl_read.as_str()
+        };
+        // The load/attach failure is an ENVIRONMENT face: perf_event_open
+        // carries the privileges a foreign-user tap never carries (the
+        // c112 cross-user face runs unprivileged by design). The tap
+        // states the tls faces unavailable and keeps the pipe and socket
+        // faces it can still capture — the boundary slice degrades, the
+        // honest answer never widens. A missing program object stays
+        // fatal: that is a build-face bug, not an environment.
+        match prog.load().and_then(|_| prog.attach(Some(sym), 0, attach_path, None)) {
+            Ok(link_id) => attached_link_ids.push(link_id),
+            Err(e) => {
+                // the partial-attach face: the earlier links undo before
+                // the degrade — a half-attached boundary would record
+                // outgoing requests without their incoming replies, and
+                // parked reads would strand in the map. The detach rides
+                // each link id through its own program's handle
+                for (i, link_id) in attached_link_ids.drain(0..).enumerate() {
+                    let prog_name = progs_tls[i];
+                    if let Some(p) = bpf.program_mut(prog_name) {
+                        if let Ok(pr) = <&mut aya::programs::UProbe>::try_from(p) {
+                            let _ = pr.detach(link_id);
+                        }
+                    }
+                }
+                eprintln!(
+                    "agentpcap tap: the tls faces stay unavailable ({name} did not attach: {e})"
+                );
+                break;
+            }
+        }
+    }
+    let mut tls_queue: Queue<_, agentpcap_collector::PipeSample> =
+        match bpf.take_map("tls_events").expect("tls queue map").try_into() {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    // the pending map's sweeping face (the bounded-cleanup face): a
+    // thread killed inside its SSL call parks keys nobody answers —
+    // the tap deletes an entry when its pid no longer exists, so the
+    // map never exhausts and the canary stays truthful
+    let mut tls_pending: aya::maps::HashMap<aya::maps::MapData, u64, SavedTlsWire> =
+        match bpf.take_map("tls_pending").expect("tls pending map").try_into() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("agentpcap tap: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
     // Calibrate the pid-namespace offset: the tap writes one sentinel
     // through the same path every tapped writer uses; the probe's
     // root-namespace pid for that write minus the tap's own pid is the
@@ -464,6 +579,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
         return ExitCode::FAILURE;
     };
 
+
     let mut writer = match LedgerWriter::create(&ledger_path) {
         Ok(w) => w,
         Err(e) => {
@@ -475,7 +591,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
     let host = std::fs::read_to_string("/etc/hostname")
         .map(|h| h.trim().to_string())
         .unwrap_or_default();
-    let mut reassembler = Reassembler::new(host.clone(), Mode::Attributed, "tap".into());
+    let mut reassembler = Reassembler::new(host.clone(), mode.clone(), "tap".into());
     let mut seq: u64 = 0;
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
@@ -483,8 +599,33 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
     // the drain alternates the two class queues (ADR-0005): each cycle
     // gives one queue the first share and falls back to the other, so
     // sustained pipe traffic never starves the socket face
-    let mut turn = true;
+    let mut turn: u8 = 0;
+    let sweep_every = Duration::from_secs(2);
+    let mut last_sweep = Instant::now();
     while !expired() && !STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // the pending sweep: a thread killed inside its TLS call parks
+        // an entry nobody collects — the face deletes an entry once its
+        // pid no longer reads through /proc, and the map never exhausts
+        if last_sweep.elapsed() >= sweep_every {
+            last_sweep = Instant::now();
+            if let Ok(keys) = tls_pending
+                .keys()
+                .collect::<Result<Vec<u64>, aya::maps::MapError>>()
+            {
+                for k in keys {
+                    // the pid translates first: the eBPF key's pid rides
+                    // the kernel-space view, /proc answers the tap's
+                    // view — the machine face (the calibration offset)
+                    // names the reader
+                    let proc_pid = ((k >> 32) as i64 - offset) as u32;
+                    if proc_pid == 0
+                        || !std::path::Path::new(&format!("/proc/{proc_pid}")).exists()
+                    {
+                        let _ = tls_pending.remove(&k);
+                    }
+                }
+            }
+        }
         // the idle face: the sweep expires stale parked requests (they
         // ride the no-response face once) and idle sessions — the
         // deployed service never grows its in-memory faces without
@@ -499,20 +640,42 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                 }
             }
         }
-        let sample_class = if turn {
-            queue
+        let sample_class = match turn % 3 {
+            0 => queue
                 .pop(0)
                 .ok()
                 .map(|s| ("pipe", s))
-                .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
-        } else {
-            sock_queue
+                .or_else(|| {
+                    sock_queue
+                        .pop(0)
+                        .ok()
+                        .map(|s| ("socket", s))
+                        .or_else(|| tls_queue.pop(0).ok().map(|s| ("tls", s)))
+                }),
+            1 => sock_queue
                 .pop(0)
                 .ok()
                 .map(|s| ("socket", s))
-                .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
+                .or_else(|| {
+                    tls_queue
+                        .pop(0)
+                        .ok()
+                        .map(|s| ("tls", s))
+                        .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
+                }),
+            _ => tls_queue
+                .pop(0)
+                .ok()
+                .map(|s| ("tls", s))
+                .or_else(|| {
+                    queue
+                        .pop(0)
+                        .ok()
+                        .map(|s| ("pipe", s))
+                        .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
+                }),
         };
-        turn = !turn;
+        turn = (turn + 1) % 3;
         let Some((class, s)) = sample_class else {
             std::thread::sleep(Duration::from_millis(2));
             continue;
@@ -551,6 +714,19 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                         pipe_fd_channel(&fd_path, machine_pid, s.fd)
                             .map(|channel| ResolvedPeer::Pipe { channel }),
                     )
+                } else if class == "tls" {
+                    // the TLS face (ADR-0006): the fd carries no socket
+                    // face (the uprobe hands the buffer, not the fd) —
+                    // the peer resolves through the writer's connected
+                    // socket as the FULL five-tuple face. The endpoint
+                    // evidence and the probe direction then name the
+                    // same faces the socket class rides: a same-id
+                    // reply binds ITS request through the remote-end
+                    // face, never the first parked one
+                    match agentpcap_collector::scan_connected_socket(machine_pid) {
+                        Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp))),
+                        None => ("socket-unresolved", None),
+                    }
                 } else {
                     match agentpcap_collector::resolve_socket_peer(machine_pid, s.fd) {
                         Some(fp) => (fp.transport, Some(ResolvedPeer::Socket(fp))),
@@ -559,7 +735,9 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                 };
             let died_unresolved = resolved.is_none();
             let resolved_face = resolved.clone();
-            let resolved = resolved.map(|rf| rf.peer()).unwrap_or_else(|| "unresolved".to_string());
+            let resolved = resolved
+                .map(|rf| rf.peer())
+                .unwrap_or_else(|| "unresolved".to_string());
             let ppid = if class == "pipe" {
                 resolve_parent(machine_pid, &mut cache, Duration::from_secs(2))
             } else {
@@ -573,8 +751,30 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                     .unwrap_or_else(|_| "unknown".to_string());
             let lossy = String::from_utf8_lossy(payload_bytes).to_string();
             let mut evidence = vec![class.to_string()];
+            if class == "tls" {
+                // the Streamable HTTP framing face (spec Section 5):
+                // the transport's headers carry Mc-Session-Id and
+                // MCP-Protocol-Version — the session id leads the
+                // session face where present, the version rides the
+                // evidence. The extraction is case-insensitive on the
+                // header names and never guesses outside the buffer
+                let lower = lossy.to_ascii_lowercase();
+                if let Some(v) = header_value(&lossy, &lower, "mcp-session-id") {
+                    evidence.push(format!("http-session:{v}"));
+                }
+                if let Some(v) = header_value(&lossy, &lower, "mcp-protocol-version") {
+                    evidence.push(format!("http-version:{v}"));
+                }
+                // the session face: a streamable HTTP session id leads
+                // the frame's peer, never the endpoints alone (spec
+                // Section 5's MUST: the reassembler reconstructs the
+                // session from Mc-Session-Id)
+            }
             if class == "pipe" {
                 evidence[0] = "stdio-pipe".into();
+            };
+            if class == "tls" {
+                evidence[0] = "tls-boundary".into();
             };
             if let Some(rf) = &resolved_face {
                 if matches!(rf, ResolvedPeer::Socket(_)) {
@@ -607,10 +807,143 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                 // no parseable JSON object (a truncation at the sample
                 // cap) records agent-shaped and unresolved, the alpha1
                 // face, never a guess.
-                let candidate = lossy.trim_start_matches(|c| c != '{');
-                let parsed = serde_json::from_str::<Value>(candidate)
-                    .ok()
-                    .filter(|v| v.is_object());
+                // the HTTP-framed face: the body starts AFTER the header
+                // block - a header's own braces (a cookie value's JSON
+                // shape) never lead the parse, the tool call after the
+                // headers still fits the sample limit
+                let body_bytes: Vec<u8> = if payload_bytes.starts_with(b"HTTP/1.")
+                    || ["POST ", "GET ", "PUT ", "PATCH", "HEAD ", "DELETE"]
+                        .iter()
+                        .any(|m| payload_bytes.starts_with(m.as_bytes()))
+                {
+                    let head_end = payload_bytes
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .or_else(|| {
+                            payload_bytes.windows(2).position(|w| w == b"\n\n")
+                        })
+                        .map(|i| {
+                            if payload_bytes
+                                .get(i..i + 4)
+                                .map(|w| w == b"\r\n\r\n")
+                                .unwrap_or(false)
+                            {
+                                i + 4
+                            } else {
+                                i + 2
+                            }
+                        })
+                        .unwrap_or(payload_bytes.len());
+                    let headers =
+                        String::from_utf8_lossy(&payload_bytes[..head_end]);
+                    // the chunked face: a Transfer-Encoding: chunked body
+                    // carries per-chunk size lines — the byte decode
+                    // concatenates the chunk payloads so a reply whose
+                    // chunks fit the sample window parses whole; the one
+                    // lossy decode rides the JOIN, never a slice cut.
+                    // the chunked-join evidence lands WHETHER or not the
+                    // replayed pair resolves: the evidence row proves the
+                    // chunked reply reached the ledger
+                    if headers.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+                        evidence.push("chunked-join".to_string());
+                        dechunk(&payload_bytes[head_end..])
+                    } else {
+                        payload_bytes[head_end..].to_vec()
+                    }
+                } else {
+                    payload_bytes.to_vec()
+                };
+                let candidate = String::from_utf8_lossy(&body_bytes);
+                // the sse face: a text/event-stream reply carries its
+                // JSON in `data:` lines — each line parses on its own
+                // (an SSE event never holds split JSON), and the first
+                // structurally complete line answers the request. The
+                // content-type faces the RAW sample's header block (a
+                // reply face: `HTTP/1.` start); a request face carries
+                // application/json and never rides this face
+                let sse_headers = if payload_bytes.starts_with(b"HTTP/1.") {
+                    payload_bytes
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map(|i| {
+                            String::from_utf8_lossy(&payload_bytes[..i])
+                                .to_ascii_lowercase()
+                                .contains("content-type: text/event-stream")
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let mut parsed = if sse_headers {
+                    let mut found = None;
+                    for line in candidate.lines() {
+                        if let Some(rest) = line.strip_prefix("data:") {
+                            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                            if let Ok(v) = serde_json::from_str::<Value>(rest) {
+                                if v.is_object() {
+                                    found = Some(v);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    found
+                } else {
+                    serde_json::from_str::<Value>(candidate.as_ref()).ok().filter(|v| v.is_object())
+                };
+                // the raw fingerprint rides BEFORE any mode rebuild: a
+                // notification's dedupe face keeps the raw message's
+                // digest (a hash, not content), so two different
+                // notifications never strip to one body and drop — the
+                // burst face counts them both
+                if mode == Mode::Opaque {
+                    evidence.push(format!(
+                        "nhash:{:016x}",
+                        fnv64(candidate.as_bytes())
+                    ));
+                }
+                // the opaque mode rebuilds the object to its identity
+                // face: jsonrpc + method + id survive, every other
+                // member (params, result, error, any extension the
+                // writer injected) strips — an opaque-mode ledger
+                // carries no content face ever (ADR-0006). The
+                // response side keeps a content-free `result: null`
+                // marker so the reassembler still binds the pair, and
+                // an error keeps only its stripped shape
+                if mode == Mode::Opaque {
+                    if let Some(obj) = parsed.as_mut().and_then(|v| v.as_object_mut()) {
+                        let id_face = obj.get("id").cloned();
+                        let method = obj.get("method").cloned();
+                        let jsonrpc = obj.get("jsonrpc").cloned();
+                        let mut face = serde_json::Map::new();
+                        if let Some(j) = jsonrpc {
+                            face.insert("jsonrpc".to_string(), j);
+                        }
+                        if let Some(m) = method {
+                            face.insert("method".to_string(), m);
+                        }
+                        // the id face carries ONLY when the original
+                        // carried it: a JSON-RPC notification omits that
+                        // field, and inserting id:null would ride it as
+                        // a parked request (the no-response face would
+                        // swallow the notify)
+                        if let Some(v) = id_face {
+                            face.insert("id".to_string(), v);
+                        }
+                        if obj.contains_key("result") {
+                            face.insert("result".to_string(), Value::Null);
+                        }
+                        if obj.contains_key("error") {
+                            let mut stripped = serde_json::Map::new();
+                            stripped.insert("stripped".to_string(), Value::Bool(true));
+                            if let Some(c) = obj["error"]["code"].as_i64() {
+                                stripped.insert("code".to_string(), json!(c));
+                            }
+                            face.insert("error".to_string(), Value::Object(stripped));
+                        }
+                        *obj = face;
+                    }
+                }
                 match parsed {
                     Some(payload) => {
                         let frame = Frame {
@@ -642,7 +975,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>) -> ExitCod
                             process,
                             pid: machine_pid,
                             transport: transport.to_string(),
-                            mode: Mode::Attributed,
+                            mode: mode.clone(),
                             verdict: Verdict::AgentUnidentified,
                             event: "unidentified".into(),
                             method: None,
@@ -726,6 +1059,106 @@ fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
 /// The calibration token: fresh bytes from the host entropy pool; the
 /// read failure is fatal (a zero token makes the sentinel guessable).
 /// /dev/urandom never ends, so the request is a bounded exact read.
+/// The HTTP header value face: the framed sample's headers ride the
+/// buffer with the body; the value reads case-insensitively by name
+/// and stops at the first CR or LF. The search bounds by the header
+/// block (the blank line), never the body.
+/// The wire face of the eBPF's parked TLS call coordinates (the same
+/// layout both sides assert): the map's sweeping face needs the value
+/// type only for key iteration, the bytes never ride the ledger.
+#[derive(Clone, Copy)]
+#[repr(C, align(8))]
+struct SavedTlsWire {
+    ubuf: u64,
+    wptr: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SavedTlsWire>() == 16);
+// zeroable + any-bit-pattern: the sweep face reads the keys only
+unsafe impl aya::Pod for SavedTlsWire {}
+
+/// The chunked decode face rides BYTES: `SIZE\r\n chunk \r\n
+/// 0\r\n\r\n` — the chunk payloads concatenate as raw bytes and the
+/// UTF-8 decode runs ONCE over the join (a str slice would cut a lossy
+/// replacement character mid-sequence and panic). The sizes and
+/// separators never ride the body. A malformed size ends the body
+/// honestly.
+fn dechunk(body: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut rest = body;
+    let mut guard = 0usize;
+    while guard < 64 {
+        guard += 1;
+        let Some(line_end) = rest.iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let size_line = String::from_utf8_lossy(&rest[..line_end])
+            .trim_end()
+            .to_string();
+        let size_str = size_line.split(';').next().unwrap_or("").trim();
+        let size = match usize::from_str_radix(size_str, 16) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        rest = &rest[line_end + 1..];
+        if size == 0 {
+            break;
+        }
+        if size > rest.len() {
+            out.extend_from_slice(rest);
+            break;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size..];
+        // the chunk's trailing newline pair
+        if rest.starts_with(b"\r\n") {
+            rest = &rest[2..];
+        } else if rest.starts_with(b"\n") {
+            rest = &rest[1..];
+        }
+    }
+    out
+}
+
+fn header_value(orig: &str, lower: &str, name: &str) -> Option<String> {
+    // the search bounds to the HEADER block: the first blank line
+    // separates it from the body, and body text never searches
+    let head_end = lower
+        .find("\r\n\r\n")
+        .or_else(|| lower.find("\n\n"))
+        .unwrap_or(lower.len());
+    // whole header-name match: the name rides its own line start
+    let needle = format!("{name}:");
+    let mut at = 0usize;
+    while let Some(line_end) = lower[at..head_end].find('\n') {
+        let line = &lower[at..at + line_end];
+        if line.starts_with(&needle) {
+            let v = orig[at + needle.len()..at + line_end].trim();
+            let v = v.trim_end_matches('\r');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+        at += line_end + 1;
+        if at >= head_end {
+            break;
+        }
+    }
+    // the tail: the LAST header line holds no own newline inside the
+    // head slice — it rides as the final segment
+    if at < head_end {
+        let line = &lower[at..head_end];
+        if line.starts_with(&needle) {
+            let v = orig[at + needle.len()..head_end].trim();
+            let v = v.trim_end_matches('\r');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn random_token() -> Result<String, std::io::Error> {
     use std::io::Read;
     let mut b = [0u8; 8];

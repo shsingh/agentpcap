@@ -20,7 +20,7 @@ fn p002_probe_emits_and_userspace_reads_back() {
         obj.display()
     );
 
-    let mut bpf = aya::Bpf::load_file(&obj).expect("bpf load failed");
+    let mut bpf = aya::Ebpf::load_file(&obj).expect("bpf load failed");
     let prog: &mut aya::programs::TracePoint = bpf
         .program_mut("agentpcap")
         .expect("program missing from object")

@@ -20,11 +20,7 @@ fn session_event(id: u64, method: &str) -> String {
             _ => "tools-call",
         },
         tool = if method == "tools/call" { r#""read""# } else { "null" },
-        fp = if method == "initialize" {
-            r#""ba8e230d1afc3aa1""#
-        } else {
-            r#""ba8e230d1afc3aa1""#
-        },
+        fp = r#""ba8e230d1afc3aa1""#,
         payload = if method == "initialize" {
             r#"{"request":{"method":"initialize"},"result":{"serverInfo":{"name":"alpha1-server"},"capabilities":{"tools":{}}}}"#
         } else if method == "tools/list" {
