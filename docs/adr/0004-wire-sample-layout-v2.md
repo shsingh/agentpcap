@@ -3,8 +3,6 @@
 Status: accepted (supersedes [0003](0003-wire-sample-layout.md) in part;
 0003's size contract stays in force). The socket-class decision extends
 this record: see [0005](0005-wire-sample-layout-v3-socket-class.md).
-The TLS-boundary decision extends it further: see
-[0006](0006-tls-boundary-collector.md).
 
 ## Context
 
