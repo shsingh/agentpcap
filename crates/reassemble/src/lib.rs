@@ -105,6 +105,13 @@ struct Pending {
     /// requests against it (the deployed service never grows its
     /// pending face without limit).
     parked_at: Instant,
+    /// The socket requester's own endpoint (the frame's `local-end`
+    /// face): the response's remote face must equal it, so two
+    /// endpoints' same-id requests never cross.
+    sock_local: Option<String>,
+    /// The probe direction face (send | receive): the same call seen
+    /// by both endpoints carries one copy per direction.
+    probe_face: Option<String>,
 }
 
 struct PendingBucket {
@@ -130,6 +137,12 @@ struct Session {
     /// idle ones (the deployed service never grows its session face
     /// without limit).
     last_activity: Instant,
+    /// The notification bodies this session already emitted inside
+    /// the dedupe window (the socket class only): the send and the
+    /// receive probes both observe one message; the ledger carries it
+    /// once. The window prunes the face, so it never grows with the
+    /// session's history.
+    emitted_notifications: std::collections::HashMap<u64, Instant>,
 }
 
 /// The FNV-1a hash over bytes: the dedupe keys ride content, not a
@@ -153,6 +166,7 @@ impl Session {
             burst_at: None,
             burst_count: 0,
             last_activity: Instant::now(),
+            emitted_notifications: std::collections::HashMap::new(),
         }
     }
 }
@@ -174,6 +188,12 @@ pub struct Reassembler {
     /// run-unique observation number, so even twins inside one second
     /// never share a key (across runs the timestamp separates them).
     obs_seq: u64,
+    /// The socket replies that bound (peer -> id -> the bound body's
+    /// FNV face): the same reply's second probe copy never re-binds,
+    /// while the peer's other reply body passes its own face. The face
+    /// clears per id at the next park and the sweep clears it whole
+    /// (bounded).
+    socket_completed: HashMap<String, HashMap<String, u64>>,
 }
 
 const TOOLS_EVIDENCE_CAP: usize = 16;
@@ -202,6 +222,7 @@ impl Reassembler {
             ttl,
             next_sweep: Instant::now(),
             obs_seq: 0,
+            socket_completed: HashMap::new(),
         }
     }
 
@@ -279,6 +300,14 @@ impl Reassembler {
         for k in expired {
             self.sessions.remove(&k);
         }
+        // the completed-call face prunes at the sweep: its ids
+        // re-park (the next park clears per id), and the peers whose
+        // session and pending faces both left drop their entries - the
+        // face never grows with old connections
+        self.socket_completed.retain(|peer, done| {
+            done.clear();
+            self.sessions.contains_key(peer) || self.pending.contains_key(peer)
+        });
         out
     }
 
@@ -370,25 +399,72 @@ impl Reassembler {
         } else {
             frame.peer.clone()
         };
-        let bucket = self
-            .pending
-            .entry(key)
-            .or_insert_with(|| PendingBucket { by_id: HashMap::new(), channels: Vec::new() });
-        if !bucket.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
-            bucket.channels.push(frame.peer.clone());
+        let bucket_key = key.clone();
+        let pending_local = frame
+            .tap_evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("local-end:").map(|v| v.to_string()));
+        let new_payload = frame.payload.clone();
+        // the observation merge face: the same call observed by both
+        // its endpoints parks once. A same-id copy whose own endpoint
+        // differs from the existing copy's, and whose body matches it,
+        // is that same call's other side — it drops. A differing body
+        // stays: the id-reuse face. The two copies' own endpoints
+        // differ, and their bodies match.
+        {
+            let bucket = self
+                .pending
+                .entry(key)
+                .or_insert_with(|| PendingBucket { by_id: HashMap::new(), channels: Vec::new() });
+            if !bucket.channels.contains(&frame.peer) && is_channel_face(&frame.peer) {
+                bucket.channels.push(frame.peer.clone());
+            }
+            let probe_face = frame
+                .tap_evidence
+                .iter()
+                .find_map(|e| e.strip_prefix("probe-face:").map(|v| v.to_string()));
+            // the id's completed face clears at its next park: the
+            // same-id reuse after a complete call re-runs
+            if let Some(done) = self.socket_completed.get_mut(&frame.peer) {
+                done.remove(&id);
+            }
+            let duplicate = bucket
+                .by_id
+                .get(&id)
+                .map(|v| {
+                    v.iter().any(|existing| {
+                        // the same message seen by its two endpoints:
+                        // the DIRECTION faces differ (a send and a
+                        // receive), the bodies match. Two independent
+                        // sends share a direction - they ride.
+                        existing.probe_face.as_deref() != probe_face.as_deref()
+                            && existing.req == new_payload
+                    })
+                })
+                .unwrap_or(false);
+            if duplicate {
+                return vec![];
+            }
+            bucket.by_id.entry(id.clone()).or_default().push(Pending {
+                transport: frame.transport.clone(),
+                peer: frame.peer.clone(),
+                req: new_payload,
+                method,
+                id,
+                pid: frame.pid,
+                comm: frame.comm.clone(),
+                tap_evidence: frame.tap_evidence.clone(),
+                observed_ts: now_rfc3339(),
+                parked_at: Instant::now(),
+                sock_local: pending_local.clone(),
+                probe_face: frame
+                    .tap_evidence
+                    .iter()
+                    .find_map(|e| {
+                        e.strip_prefix("probe-face:").map(|v| v.to_string())
+                    }),
+            });
         }
-        bucket.by_id.entry(id.clone()).or_default().push(Pending {
-            transport: frame.transport.clone(),
-            peer: frame.peer.clone(),
-            req: frame.payload.clone(),
-            method,
-            id,
-            pid: frame.pid,
-            comm: frame.comm.clone(),
-            tap_evidence: frame.tap_evidence.clone(),
-            observed_ts: now_rfc3339(),
-            parked_at: Instant::now(),
-        });
         vec![]
     }
 
@@ -457,6 +533,25 @@ impl Reassembler {
         }
         let fp = session.cap_fingerprint.clone();
         let proto = session.protocol_version.clone();
+        let notify_hash = fnv64(serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice());
+        // the socket class only: a message the send and the receive
+        // probes both captured rides once inside the dedupe window (a
+        // repeated message past the window is a separate observation —
+        // the capture scope never narrows). The stdio pipe class never
+        // dedupes: a repeated notification is real traffic. The
+        // window prunes the face, so it never grows with history.
+        if frame.peer.starts_with("net-") {
+            let now = Instant::now();
+            session
+                .emitted_notifications
+                .retain(|_, seen| now.duration_since(*seen) <= BURST_WINDOW);
+            if let Some(seen) = session.emitted_notifications.get(&notify_hash) {
+                if now.duration_since(*seen) <= BURST_WINDOW {
+                    return vec![];
+                }
+            }
+            session.emitted_notifications.insert(notify_hash, now);
+        }
         let mut evidence = frame.tap_evidence.clone();
         evidence.push(format!("chan:{}", frame.peer));
         evidence.push("reassembled:notify".into());
@@ -514,7 +609,60 @@ impl Reassembler {
                 .any(|e| e == "fd-unresolved-at-pop");
         let mut bound: Option<(String, Pending)> = None;
         let mut pair_face = false;
-        if pipe_class && frame.ppid > 0 {
+        if !pipe_class && frame.peer != "unresolved" {
+            // the resolved connection binds its OWN bucket first: a
+            // socket response pairs with the request parked on the
+            // same five-tuple (two connections carrying the same id
+            // never merge), it never reads the global fallback, and
+            // the DIRECTION face holds - the response's remote face
+            // must equal the requester's own endpoint, so two
+            // endpoints' same-id requests never cross
+            let response_remote = frame
+                .tap_evidence
+                .iter()
+                .find_map(|e| e.strip_prefix("remote-end:").map(|v| v.to_string()));
+            // the repeat-result face: the same reply body's other
+            // probe copy drops once that call bound; a DIFFERENT body
+            // under the same id (the peer's other request) passes its
+            // own face and binds
+            let reply_body_hash = fnv64(
+                serde_json::to_vec(&frame.payload).unwrap_or_default().as_slice(),
+            );
+            if let Some(completed) = self.socket_completed.get(&frame.peer) {
+                if completed.get(&id) == Some(&reply_body_hash) && response_remote.is_some() {
+                    return vec![];
+                }
+            }
+            if let Some(b) = self.pending.get_mut(&frame.peer) {
+                if let Some(v) = b.by_id.get_mut(&id) {
+                    let matched = match &response_remote {
+                        Some(face) => v
+                            .iter()
+                            .position(|p| p.sock_local.as_deref() == Some(face.as_str())),
+                        None => {
+                            if v.is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            }
+                        }
+                    };
+                    if let Some(pos) = matched {
+                        let p = v.remove(pos);
+                        let consumed = v.is_empty();
+                        if consumed && response_remote.is_some() {
+                            b.by_id.remove(&id);
+                        }
+                        bound = Some((frame.peer.clone(), p));
+                        self.socket_completed
+                            .entry(frame.peer.clone())
+                            .or_default()
+                            .insert(id.clone(), reply_body_hash);
+                    }
+                }
+            }
+        }
+        if bound.is_none() && pipe_class && frame.ppid > 0 {
             let bucket_key = format!("req:{}", frame.ppid);
             if let Some(b) = self.pending.get_mut(&bucket_key) {
                 let mut consumed = false;
@@ -534,7 +682,10 @@ impl Reassembler {
                 }
             }
         }
-        if bound.is_none() {
+        // the global fallback answers only the pipe faces and the
+        // unresolved placeholder: a RESOLVED socket connection's
+        // response never reads another connection's id
+        if bound.is_none() && (pipe_class || frame.peer == "unresolved") {
             let matches: usize = self
                 .pending
                 .values()
