@@ -140,32 +140,45 @@ fn c113_the_https_framed_call_answers_the_ledger() {
         "the framed body rides the merged record"
     );
     // the REPLY face: the server answers id 1 with the matching tool
-    // result, and the merged payload carries the content — the response
-    // capture faces the ledger when the pair binds
-        // the reply content assert TIES to the chunked-join face: the
-        // chunked reply reached the ledger as boundary evidence — the
-        // assert holds on every run, the merge face rides c111
-        let joined = recs
-            .iter()
-            .any(|r| {
-                r["evidence"]
-                    .as_array()
-                    .map(|e| e.iter().any(|x| x == "chunked-join"))
-                    .unwrap_or(false)
-            });
-        assert!(
-            joined,
-            "the chunked reply's chunked-join evidence rides this run's ledger"
-        );
-        if let Some(text) = call["payload"]["result"]["content"][0]["text"].as_str() {
-            assert_eq!(text, "tls-hello", "the framed reply rides the merged record");
-            eprintln!("c113 receipt: reply content tls-hello rides the ledger");
-        } else {
-            // the honest race fallback (ADR-0004): the pair keyed
-            // unresolved on the dev-VM pid-space face; the merge face
-            // rides c111, the chunked-join evidence proves the reply
-            // reached the ledger
-            eprintln!("c113 note: the reply rides the race fallback (ADR-0004); the request face landed");
-        }
+    // result; the pair may bind (the merged record) or ride ADR-0004's
+    // honest race fallback — the reply's OWN capture faces prove the
+    // chunked decode on either path; the ledger is this run's tempdir
+    // file, so every row is this run's
+    let joined = text
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .any(|r| {
+            r["evidence"]
+                .as_array()
+                .map(|e| {
+                    e.iter().any(|x| x == "chunked-join")
+                        && e.iter().any(|x| x == "tls-boundary")
+                })
+                .unwrap_or(false)
+        });
+    assert!(
+        joined,
+        "the chunked reply's chunked-join evidence rides this run's ledger"
+    );
+    // the content face: the chunked decode lands the reply's JSON
+    // verbatim — a dead-buffer capture (the #83 class) rides the wrong
+    // content and fails here
+    let content = text
+        .lines()
+        .flat_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .any(|r| r["payload"]["result"]["content"][0]["text"].as_str() == Some("tls-hello"));
+    assert!(
+        content,
+        "the chunked reply's tls-hello content rides this run's ledger"
+    );
+    if let Some(text) = call["payload"]["result"]["content"][0]["text"].as_str() {
+        assert_eq!(text, "tls-hello", "the framed reply rides the merged record");
+        eprintln!("c113 receipt: reply content tls-hello rides the ledger");
+    } else {
+        // the honest race fallback (ADR-0004): the pair keyed
+        // unresolved on the dev-VM pid-space face; the chunked-join +
+        // content faces prove the reply reached the ledger
+        eprintln!("c113 note: the reply rides the race fallback (ADR-0004); the capture faces landed");
+    }
     assert_eq!(call["mode"], "attributed", "the HTTPS face captures attributed");
 }
