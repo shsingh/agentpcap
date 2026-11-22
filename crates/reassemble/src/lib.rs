@@ -82,6 +82,11 @@ pub fn capability_fingerprint(capabilities: &Value) -> String {
     hex::encode(h.finalize())[..16].to_string()
 }
 
+/// The session-event record's schema face (ADR-0007): the merged
+/// payload shape differs from the frame face, and the version
+/// distinguishes them inside one ledger.
+pub const RECORD_SCHEMA_VERSION: &str = "2.0";
+
 /// One parked request frame, awaiting a response that binds its id.
 struct Pending {
     transport: String,
@@ -92,6 +97,10 @@ struct Pending {
     pid: u32,
     comm: String,
     tap_evidence: Vec<String>,
+    /// The frame's observation time: the time the reassembler first
+    /// saw it (≈ the sample's pop, within one drain tick). The
+    /// flush face stamps this, never the window's end.
+    observed_ts: String,
 }
 
 struct PendingBucket {
@@ -212,6 +221,7 @@ impl Reassembler {
             pid: frame.pid,
             comm: frame.comm.clone(),
             tap_evidence: frame.tap_evidence.clone(),
+            observed_ts: now_rfc3339(),
         });
         vec![]
     }
@@ -278,7 +288,7 @@ impl Reassembler {
             payload,
             evidence: Some(evidence),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         };
         vec![ev]
     }
@@ -324,8 +334,6 @@ impl Reassembler {
             }
         }
         if bound.is_none() {
-            // the matches count only NON-EMPTY vecs: an empty vec is a
-            // removed face, never a parked request
             let matches: usize = self
                 .pending
                 .values()
@@ -344,12 +352,12 @@ impl Reassembler {
                 )];
             }
             if matches == 1 {
-                let key: Option<String> = self
+                let bucket_key: Option<String> = self
                     .pending
                     .iter()
                     .find(|(_, b)| b.by_id.get(&id).map_or(false, |v| !v.is_empty()))
                     .map(|(k, _)| k.clone());
-                if let Some(bucket_key) = key {
+                if let Some(bucket_key) = bucket_key {
                     if let Some(b) = self.pending.get_mut(&bucket_key) {
                         let mut consumed = false;
                         if let Some(v) = b.by_id.get_mut(&id) {
@@ -467,8 +475,15 @@ impl Reassembler {
             Some(_) => Some(serde_json::json!({"request": p.req, "result": result})),
             None => Some(serde_json::json!({"request": p.req, "result": Value::Null})),
         };
+        // the merged bind stamps the bind time (the response half
+        // completes the record); the flush face stamps the request's
+        // observation time, never the capture window's end (ADR-0007)
+        let ts = match bind_key {
+            Some(_) => now_rfc3339(),
+            None => p.observed_ts.clone(),
+        };
         Event {
-            ts: now_rfc3339(),
+            ts,
             host: self.host.clone(),
             process: p.comm.clone(),
             pid: p.pid,
@@ -486,7 +501,7 @@ impl Reassembler {
             payload,
             evidence: Some(evidence),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         }
     }
 
@@ -548,7 +563,7 @@ impl Reassembler {
             payload: Some(frame.payload.clone()),
             evidence: Some([frame.tap_evidence, features].concat()),
             source: self.source.clone(),
-            schema_version: "1.0".into(),
+            schema_version: RECORD_SCHEMA_VERSION.into(),
         };
         ev
     }

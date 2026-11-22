@@ -20,6 +20,11 @@ pub mod conformance;
 
 pub const SCHEMA_VERSION: &str = "1.0";
 
+/// The known record faces (ADR-0007): the frame face 1.0 and the
+/// session-event face 2.0 chain into one ledger; anything else
+/// refuses.
+pub const SCHEMA_VERSIONS: [&str; 2] = ["1.0", "2.0"];
+
 /// Failure classes for the ordered-check semantics of the ledger.
 #[derive(Debug)]
 pub enum LedgerError {
@@ -141,7 +146,11 @@ impl LedgerWriter {
             .as_object_mut()
             .ok_or(LedgerError::Format(self.count))?;
         if let Some(v) = obj.get("schema_version") {
-            if v.as_str() != Some(SCHEMA_VERSION) {
+            let known = v
+                .as_str()
+                .map(|s| SCHEMA_VERSIONS.contains(&s))
+                .unwrap_or(false);
+            if !known {
                 return Err(LedgerError::SchemaMismatch(self.count));
             }
         }
