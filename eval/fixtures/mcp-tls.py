@@ -54,7 +54,7 @@ def server(port, marker, http=False, sse=False):
             # the reply rides chunked transfer: the size lines split
             # the JSON, the boundary's decode face concatenates
             body = b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",'
-            tail = f'"text":"tls-{marker}"}}}}'.encode()
+            tail = ('"text":"tls-' + marker + '"}]}}').encode()
             tls.sendall(
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
                 + b"%x\r\n" % len(body) + body + b"\r\n"
@@ -63,7 +63,7 @@ def server(port, marker, http=False, sse=False):
             )
             more = tls.recv(4096).decode()
             if "tools/call" in more:
-                body2 = f'{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"tls-{marker}"}}]}}}}'.encode()
+                body2 = ('{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"tls-' + marker + '"}]}}').encode()
                 tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body2)).encode() + b"\r\n\r\n" + body2)
                 import time
                 time.sleep(0.4)
@@ -80,7 +80,7 @@ def server(port, marker, http=False, sse=False):
             more = ""
         if "tools/call" in more:
             tls.sendall(
-                f'{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"tls-{marker}"}}]}}}}\n'.encode()
+                ('{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"tls-' + marker + '"}]}}\n').encode()
             )
             # the writer's fds stay resolvable for the pop window
             import time
