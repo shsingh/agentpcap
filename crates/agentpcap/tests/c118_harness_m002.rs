@@ -83,6 +83,13 @@ fn c118_the_m002_item_answers_the_tap_delta_against_the_figure() {
         cpu >= 0.0,
         "the tap's measured CPU consumption is measured, never defaulted"
     );
+    // the CPU face: the tap's own consumption stays under the published
+    // figure (issue #88: the idle drain loop polls at 2 ms and burns
+    // over the figure — the fix face lands the idle backoff)
+    assert!(
+        cpu <= figure,
+        "the tap's own CPU consumption stays under the published {figure}%: {cpu}"
+    );
     // the verdict formula face: pass iff BOTH faces sit under the figure
     let pass = delta <= figure && cpu <= figure;
     assert_eq!(

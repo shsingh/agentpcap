@@ -593,6 +593,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         .unwrap_or_default();
     let mut reassembler = Reassembler::new(host.clone(), mode.clone(), "tap".into());
     let mut seq: u64 = 0;
+    let mut idle_turns: u32 = 0;
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
@@ -677,9 +678,25 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         };
         turn = (turn + 1) % 3;
         let Some((class, s)) = sample_class else {
-            std::thread::sleep(Duration::from_millis(2));
+            // the idle drain backoff (issue #88): the 2 ms poll burns
+            // the tap's CPU idle over the M002 figure — the poll backs
+            // off when the queues sit empty and snaps back to 2 ms on
+            // the next sampled write, so the latency face keeps its
+            // hot path and the idle face saves its cycles
+            idle_turns = (idle_turns + 1).min(32);
+            let step = if idle_turns >= 24 {
+                16
+            } else if idle_turns >= 16 {
+                8
+            } else if idle_turns >= 8 {
+                4
+            } else {
+                2
+            };
+            std::thread::sleep(Duration::from_millis(step));
             continue;
         };
+        idle_turns = 0;
         {
             seq += 1;
             let machine_pid = s.pid as i64 - offset;
