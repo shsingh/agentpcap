@@ -13,13 +13,18 @@ import time
 
 class ServerSpec:
     """The seeded server faces: per-call-count tool sets and capability
-    faces. The server answers from its counters — the re-scope faces
-    mid-capture, exactly the operator shape M004 measures."""
+    faces, and a run-unique server name. The server answers from its
+    counters — the re-scope faces mid-capture, exactly the operator
+    shape M004 measures. `strip_caps` rides the negative face: the
+    initialize replies carry no capability member at all."""
 
-    def __init__(self, tools_by_call, capabilities_by_call, tool_result):
+    def __init__(self, tools_by_call, capabilities_by_call, tool_result,
+                 server_name, strip_caps=False):
         self.tools_by_call = tools_by_call
         self.capabilities_by_call = capabilities_by_call
         self.tool_result = tool_result
+        self.server_name = server_name
+        self.strip_caps = strip_caps
 
 
 def server_script(spec):
@@ -31,6 +36,8 @@ def server_script(spec):
         "TOOLS_BY_CALL = " + repr(spec.tools_by_call),
         "CAPS_BY_CALL = " + repr(spec.capabilities_by_call),
         "TOOL_RESULT = " + repr(spec.tool_result),
+        "SERVER_NAME = " + repr(spec.server_name),
+        "STRIP_CAPS = " + repr(spec.strip_caps),
         "lists = 0",
         "inits = 0",
         "for line in sys.stdin:",
@@ -45,9 +52,11 @@ def server_script(spec):
         '    if m == "initialize":',
         "        caps = CAPS_BY_CALL[min(inits, len(CAPS_BY_CALL) - 1)]",
         "        inits += 1",
-        "        reply = {\"jsonrpc\":\"2.0\",\"id\":obj[\"id\"],\"result\":"
-        '{"protocolVersion":"2025-06-18","capabilities":caps,'
-        '"serverInfo":{"name":"harness-server","version":"0"}}}',
+        '        result = {"protocolVersion":"2025-06-18"}',
+        "        if not STRIP_CAPS:",
+        '            result["capabilities"] = caps',
+        '        result["serverInfo"] = {"name":SERVER_NAME,"version":"0"}',
+        "        reply = {\"jsonrpc\":\"2.0\",\"id\":obj[\"id\"],\"result\":result}",
         "        print(json.dumps(reply), flush=True)",
         '    elif m == "tools/list":',
         "        tools = TOOLS_BY_CALL[min(lists, len(TOOLS_BY_CALL) - 1)]",
@@ -84,10 +93,16 @@ LIST_2 = '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}'
 def run_scenario(binary, workdir, name, window, spec):
     """One M004 scenario: the tap over a real stdio exchange whose
     server re-scopes mid-flight. Returns (ledger_path, records)."""
+
     import subprocess  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
     ledger = workdir / (name + ".jsonl")
+    if ledger.exists():
+        raise SystemExit(
+            "the harness refuses a reused workdir: the capture at "
+            + str(ledger) + " belongs to another run"
+        )
     script = workdir / (name + "-server.py")
     Path(script).write_text(server_script(spec))
 
@@ -136,8 +151,15 @@ def run_scenario(binary, workdir, name, window, spec):
         # the tap's window runs out; the drain lands the parked samples
         tap.wait(timeout=window + 30)
 
-        text = Path(ledger).read_text()
-        records = [json.loads(l) for l in text.splitlines() if l.strip()]
+        # spec section 13: the records ride the EXPORT surface; the read
+        # also logs access on the original ledger (the access-log face)
+        out = subprocess.run(
+            [binary, "export", "--ledger", str(ledger)],
+            capture_output=True, text=True,
+        )
+        if out.returncode != 0:
+            raise SystemExit("export failed: " + out.stderr)
+        records = [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
         return ledger, records
     finally:
         if tap.poll() is None:

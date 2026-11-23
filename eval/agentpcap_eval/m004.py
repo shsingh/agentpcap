@@ -3,17 +3,22 @@
 One full M-item end to end, cell-level: ONE real capture session whose
 server re-scopes mid-flight — the tool set changes (one description
 changed, one tool added, one removed) and the capability face changes.
-The harness slices the capture at the change point into the before and
-after sets (the export-surface face), then the CLI diff answers the
-drift events. The seeded expectation compares kind-for-kind:
-`tool-description-changed`, `tools-added`, `tools-removed`,
-`server-rescoped`, with the seeded description texts. Harness overhead
-stays out of the tap's measurement path: the receipt carries no tap
-timing.
+The harness reads the capture through the `export` surface (the
+access-log face rides it), selects the run's own session by its
+run-unique server name, slices the session at the change point into
+the before and after sets (owner-only files), then the CLI diff answers
+the drift events. The seeded expectation compares kind-for-kind against
+the seeds — the kinds, the changed description's texts, the added and
+removed tool names, and the capability fingerprints (both present and
+differing). With `--strip-caps` the seeds lose the capability member
+entirely: the fidelity face then fails by design (the negative face —
+losing capability data never passes silently). Harness overhead stays
+out of the tap's measurement path: the receipt carries no tap timing.
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,29 +38,50 @@ CAP_V2 = {"tools": {}, "listChanged": True}
 TOOL_RESULT = "c117-hello"
 
 SEEDED_KINDS = [
+    "server-rescoped",
     "tool-description-changed",
     "tools-added",
     "tools-removed",
-    "server-rescoped",
 ]
+SEEDED_ADDED = ["write"]
+SEEDED_REMOVED = ["gone"]
 
 
-def split_ledger(records, split_index, ledger):
-    """Slice the capture at the change point: the before set rides every
-    record through the last pre-change face; the after set rides the
-    changed faces onward. Each side stays a valid JSONL ledger."""
-    lines = ledger.read_text().splitlines()
-    before = Path(str(ledger) + ".before")
-    after = Path(str(ledger) + ".after")
-    after.write_text("\n".join(lines[split_index:]) + "\n")
-    before.write_text("\n".join(lines[:split_index]) + "\n")
-    del records
-    return before, after
+def export_records(binary, ledger):
+    """The records ride the export surface only (spec section 13); the
+    export read logs access on the original ledger."""
+    out = subprocess.run(
+        [binary, "export", "--ledger", str(ledger)],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        raise SystemExit("export failed: " + out.stderr)
+    return [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
 
 
-def drift_diff(binary, before, after):
-    """The CLI face: diff on the two sliced ledger sets, one JSON event
-    per line."""
+def owner_file(path, text):
+    """Write capture content to an owner-only file (mode 0600) — the
+    before/after copies carry captured faces, so they never widen past
+    the tap's own ledger permissions."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    return path
+
+
+def run_names(events):
+    """The added and removed tool names from the drift events. The
+    tools-added/removed events carry the tool NAME list."""
+    added, removed = [], []
+    for e in events:
+        if e["kind"] == "tools-added":
+            added += sorted(e["tools"])
+        if e["kind"] == "tools-removed":
+            removed += sorted(e["tools"])
+    return added, removed
+
+
+def drifted_drift(binary, before, after):
     out = subprocess.run(
         [binary, "diff", "--before", str(before), "--after", str(after)],
         capture_output=True,
@@ -75,30 +101,63 @@ def descriptions(events):
     return face
 
 
+def rescoped(events):
+    for e in events:
+        if e["kind"] == "server-rescoped":
+            return {"before": e.get("before"), "after": e.get("after")}
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--window", type=int, default=8)
+    ap.add_argument(
+        "--strip-caps", action="store_true",
+        help="the negative face: the seeds carry no capability member "
+             "at all — the fidelity face fails by design",
+    )
     args = ap.parse_args(argv)
 
     binary = str(Path(args.binary))
     workdir = Path(args.workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
+    run_token = "harness-" + os.urandom(6).hex()
     spec = ServerSpec(
         tools_by_call=[TOOLS_V1, TOOLS_V2],
         capabilities_by_call=[CAP_V1, CAP_V2],
         tool_result=TOOL_RESULT,
+        server_name=run_token,
+        strip_caps=args.strip_caps,
     )
-    ledger, records = run_scenario(binary, workdir, "m004", args.window, spec)
+    ledger, _ = run_scenario(binary, workdir, "m004", args.window, spec)
+
+    everything = export_records(binary, ledger)
+    # select this run's own session: the initialize reply carries the
+    # run-unique server name; unrelated host traffic never names it
+    own = [
+        r for r in everything
+        if json.dumps(r).find(run_token) >= 0
+    ]
+    if not own:
+        receipt = {
+            "item": "M004", "result": "fail",
+            "reason": "the run-unique session never landed",
+        }
+        print(json.dumps(receipt))
+        return 1
+    session_id = own[0].get("session_id")
+    session_records = [
+        r for r in everything
+        if r.get("session_id") == session_id
+    ]
 
     # the change point: the merged initialize record whose request id is
-    # 4 (the second initialize re-arms the capability face) — the before
-    # slice carries the pre-change faces, the after slice carries init_2
-    # and the changed tool set
+    # 4 (the second initialize re-arms the capability face)
     split_index = None
-    for i, r in enumerate(records):
+    for i, r in enumerate(session_records):
         if (
             r.get("event") == "init"
             and str(r.get("payload", {}).get("request", {}).get("id")) == "4"
@@ -107,28 +166,56 @@ def main(argv=None):
             break
     if split_index is None:
         receipt = {
-            "item": "M004",
-            "result": "fail",
+            "item": "M004", "result": "fail",
             "reason": "the re-scoped initialize record never landed",
         }
         print(json.dumps(receipt))
         return 1
 
-    before, after = split_ledger(records, split_index, ledger)
-    events = drift_diff(binary, before, after)
+    before = owner_file(
+        workdir / (run_token + ".before.jsonl"),
+        "\n".join(json.dumps(r) for r in session_records[:split_index]) + "\n",
+    )
+    after = owner_file(
+        workdir / (run_token + ".after.jsonl"),
+        "\n".join(json.dumps(r) for r in session_records[split_index:]) + "\n",
+    )
+    events = drifted_drift(binary, before, after)
     kinds = sorted(e["kind"] for e in events)
     read = descriptions(events).get("read", {})
+    added, removed = run_names(events)
+    rescope = rescoped(events)
 
     ok = (
-        kinds == sorted(SEEDED_KINDS)
+        kinds == SEEDED_KINDS
         and read.get("before") == "read a file"
         and read.get("after") == "read a file v2"
+        and sorted(added) == SEEDED_ADDED
+        and sorted(removed) == SEEDED_REMOVED
+        and rescope is not None
+        and bool(rescope["before"])
+        and bool(rescope["after"])
+        and rescope["before"] != rescope["after"]
     )
     receipt = {
         "item": "M004",
         "result": "pass" if ok else "fail",
-        "diff": {"kinds": kinds, "descriptions": {"read": read}},
+        "diff": {
+            "kinds": kinds,
+            "descriptions": {"read": read},
+            "added": sorted(added),
+            "removed": sorted(removed),
+            "rescoped": rescope,
+            "fingerprint_face": (
+                "absent" if args.strip_caps else "capability"
+            ),
+        },
+        "reason": (
+            "the capability fingerprints are absent; the fidelity face "
+            "requires them" if args.strip_caps and not ok else None
+        ),
     }
+    receipt = {k: v for k, v in receipt.items() if v is not None}
     print(json.dumps(receipt))
     return 0 if ok else 1
 
