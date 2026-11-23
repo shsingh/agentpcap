@@ -69,18 +69,28 @@ fn c123_the_triage_label_beats_the_catalog_without_one() {
         "the plain streams stay unlabeled: the decoy and its sibling"
     );
     assert_eq!(
-        receipt["tap"]["false_positive_rate"].as_f64(),
-        Some(0.0),
-        "the tap's false-positive rate rides 0 on the seeded mix"
-    );
-    assert_eq!(
-        receipt["tap"]["precision"].as_f64(),
+        receipt["tap"]["row_precision"].as_f64(),
         Some(1.0),
         "every agent-unidentified label is true on the seeded mix"
     );
+    assert_eq!(
+        receipt["tap"]["row_false_positive_rate"].as_f64(),
+        Some(0.0),
+        "the tap's row-level false-positive rate rides 0 on the seeded mix"
+    );
+    assert_eq!(
+        receipt["tap"]["stream_precision"].as_f64(),
+        Some(1.0),
+        "both agent streams label and both plain streams stay silent"
+    );
+    assert_eq!(
+        receipt["tap"]["stream_false_positive_rate"].as_f64(),
+        Some(0.0),
+        "no truth-non-agent stream lands an agent label"
+    );
     // the catalog face: the decoy's agent-like comm catches the
     // metadata baseline — the tap never reads comm names
-    let meta_fp = receipt["metadata_baseline"]["false_positive_rate"]
+    let meta_fp = receipt["metadata_baseline"]["stream_false_positive_rate"]
         .as_f64()
         .expect("the metadata false-positive rate rides the receipt");
     assert!(
@@ -88,12 +98,17 @@ fn c123_the_triage_label_beats_the_catalog_without_one() {
         "the decoy catches the name catalog: {meta_fp}"
     );
     assert_eq!(
-        receipt["prober_baseline"]["precision"].as_f64(),
+        receipt["metadata_baseline"]["stream_precision"].as_f64(),
+        Some(1.0),
+        "the catalog labels both agent streams right (its flaw rides the decoy)"
+    );
+    assert_eq!(
+        receipt["prober_baseline"]["stream_precision"].as_f64(),
         Some(1.0),
         "the prober baseline posts the generator's precision"
     );
     assert_eq!(
-        receipt["prober_baseline"]["false_positive_rate"].as_f64(),
+        receipt["prober_baseline"]["stream_false_positive_rate"].as_f64(),
         Some(0.0),
         "the prober baseline posts the generator's ground truth"
     );
