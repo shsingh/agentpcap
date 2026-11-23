@@ -87,8 +87,16 @@ fn c120_the_between_sessions_drift_matches_the_injected_change_exactly() {
     let rescope = receipt["emitted"]["rescoped"]
         .as_object()
         .expect("the rescoped face rides");
-    assert_ne!(
-        rescope["before"], rescope["after"],
-        "the capability fingerprints differ across the sessions"
+    // fingerprint-for-fingerprint: the emitted fingerprints match the
+    // injected sha-256 expectations, never a swapped face
+    assert_eq!(
+        receipt["injected"]["rescoped"]["before"].as_str(),
+        rescope["before"].as_str(),
+        "the before fingerprint matches the injected expectation"
+    );
+    assert_eq!(
+        receipt["injected"]["rescoped"]["after"].as_str(),
+        rescope["after"].as_str(),
+        "the after fingerprint matches the injected expectation"
     );
 }
