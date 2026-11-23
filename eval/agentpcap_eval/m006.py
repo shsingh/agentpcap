@@ -53,15 +53,16 @@ class LedgerPoller(threading.Thread):
         self.landed = {}  # request-id string -> landing wall-clock
         self._pos = 0
         self._pending = b""
-        self._stop = threading.Event()
+        self._halt = threading.Event()
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             self.poll()
             time.sleep(0.02)
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
+        self.join(timeout=30)
         self.poll()
 
     def poll(self):
@@ -250,6 +251,8 @@ def score(binary, ledger, poller, write_times, server_name, budget_s,
     not_exported = [fid for fid in write_times if fid not in export_ids]
     if not_exported:
         reasons.append("the export face never answers: " + ",".join(not_exported))
+    if missing:
+        reasons.append("frames never landed: " + ",".join(missing))
     over = [x["id"] for x in latencies if x["latency_s"] >= budget_s]
     if over:
         reasons.append("rows outside the budget: " + ",".join(over))
