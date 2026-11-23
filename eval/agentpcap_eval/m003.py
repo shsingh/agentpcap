@@ -1,20 +1,26 @@
 """M003 — the transport-coverage matrix (spec section 13).
 
-The matrix over the four transports of the coverage claim:
-stdio, Streamable HTTP (the TLS boundary), legacy HTTP+SSE, and A2A
-detection. Each row runs a real capture through the harness and
-answers a coverage verdict per transport; a face the capture cannot
-support names its gap with its issue link — gaps are enumerated, never
-implicit (issue #27's acceptance). The harness consumes only the CLI
-and export surfaces, and the receipt carries no tap-internal timing.
+The matrix over the four transports of the coverage claim: stdio,
+Streamable HTTP (the TLS boundary), legacy HTTP+SSE, and A2A detection.
+Each row runs a real capture through the harness and answers a coverage
+verdict per transport. Coverage ties to THIS run's own faces: the run
+names its server with a run-unique marker, and every row requires the
+fixture's own reply data (the seeded tool set, the result text, the
+classifying verdict) before it reports covered. A face the capture
+cannot support names its gap with its issue link — gaps are
+enumerated, never implicit. All rows read their records through the
+`export` surface (the chain check and access log face it), never the
+raw ledger. The receipt carries no tap-internal timing.
 """
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .scenario import ServerSpec, run_scenario
@@ -25,10 +31,83 @@ A2A_FRAMES = [
 ]
 
 
-def a2a_server_script():
+def export_records(binary, ledger_path):
+    """The records ride the export surface only (the chain check and
+    access-log face it carries); a nonzero export fails the row."""
+    out = subprocess.run(
+        [binary, "export", "--ledger", str(ledger_path)],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        raise SystemExit("export failed: " + out.stderr)
+    return [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+
+
+def run_stdio(binary, workdir, marker):
+    """The stdio row: the m004-shaped capture re-scopes mid-flight.
+    Covered requires the fixture's OWN reply faces: the seeded tool
+    set, the run marker in the server name, and the seeded result
+    text — the merged capture, not the flush fallback."""
+    spec = ServerSpec(
+        tools_by_call=[
+            [{"name": "read", "description": "read a file"}],
+            [{"name": "read", "description": "read a file v2"}],
+        ],
+        capabilities_by_call=[{"tools": {}}, {"tools": {}, "listChanged": True}],
+        tool_result=marker,
+        server_name="harness-stdio-" + marker,
+    )
+    ledger, records = run_scenario(binary, workdir, "m003-stdio", 9, spec)
+    exported = export_records(binary, ledger)
+    events = sorted({r["event"] for r in exported if r.get("event")})
+    merged = set(events) == {"init", "tools-call", "tools-list"}
+    seeded = json.dumps(exported).find(marker) >= 0 and json.dumps(
+        exported
+    ).find('"read a file v2"') >= 0
+    covered = merged and seeded
+    return {
+        "transport": "stdio",
+        "verdict": "covered" if covered else "gap",
+        "evidence": "merged=" + json.dumps(merged) + " seeded=" + json.dumps(seeded)
+        + " events=" + json.dumps(events),
+    }
+
+
+def serve_and_client(binary, script, client_args, ledger, window):
+    """Shared capture face: the tap, then the caller's server/client."""
+    tap = subprocess.Popen(
+        [binary, "tap", "--ledger", str(ledger), "--duration", str(window)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        import time as _t  # noqa: PLC0415
+
+        _t.sleep(1.2)
+        return tap, _t
+    finally:
+        pass
+
+
+def finish_tap(tap):
+    if tap.poll() is None:
+        tap.kill()
+    if tap.stderr:
+        tap.stderr.close()
+
+
+def run_a2a(binary, workdir, marker):
+    """The A2A row: message/send classifies verdict a2a from protocol
+    semantics (spec section 6). Covered requires the classifying record
+    carrying THIS run's own marker — the frame text rides it, so the
+    request record ties whatever the reply merge face does."""
+    ledger = workdir / "m003-a2a.jsonl"
+    script = workdir / "m003-a2a-server.py"
     lines = [
         "#!/usr/bin/env python3",
         "import json, sys",
+        "MARKER = " + repr(marker),
         "for line in sys.stdin:",
         "    line = line.strip()",
         "    if not line:",
@@ -39,41 +118,10 @@ def a2a_server_script():
         "        continue",
         '    if obj.get("method") == "message/send":',
         "        reply = {\"jsonrpc\":\"2.0\",\"id\":obj[\"id\"],"
-        '"result":{"text":"c119-a2a-ack"}}',
+        '"result":{"text":"ack"}}',
         "        print(json.dumps(reply), flush=True)",
     ]
-    return "\n".join(lines) + "\n"
-
-
-def run_stdio(binary, workdir):
-    """The stdio row: the m004-shaped capture re-scopes mid-flight.
-    Covered when the merged session events ride."""
-    spec = ServerSpec(
-        tools_by_call=[
-            [{"name": "read", "description": "read a file"}],
-            [{"name": "read", "description": "read a file v2"}],
-        ],
-        capabilities_by_call=[{"tools": {}}, {"tools": {}, "listChanged": True}],
-        tool_result="c119-stdio",
-        server_name="harness-stdio",
-    )
-    ledger, records = run_scenario(binary, workdir, "m003-stdio", 9, spec)
-    events = sorted({r["event"] for r in records if r.get("event")})
-    covered = {"tools-list", "tools-call", "init"} <= set(events)
-    return {
-        "transport": "stdio",
-        "verdict": "covered" if covered else "gap",
-        "evidence": f"ledger records={len(records)} events={events}",
-    }
-
-
-def run_a2a(binary, workdir):
-    """The A2A row: message/send classifies verdict a2a from protocol
-    semantics (spec section 6). Covered when the merged event rides
-    a2a."""
-    ledger = workdir / "m003-a2a.jsonl"
-    script = workdir / "m003-a2a-server.py"
-    Path(script).write_text(a2a_server_script())
+    Path(script).write_text("\n".join(lines) + "\n")
     tap = subprocess.Popen(
         [binary, "tap", "--ledger", str(ledger), "--duration", "9"],
         stdout=subprocess.DEVNULL,
@@ -89,9 +137,13 @@ def run_a2a(binary, workdir):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        frame = (
+            '{"jsonrpc":"2.0","id":11,"method":"message/send","params":'
+            '{"role":"agent","parts":[{"kind":"text","text":"' + marker + '"}]}}'
+        )
         try:
-            for f in A2A_FRAMES:
-                server.stdin.write((f + "\n").encode())
+            for _ in range(1):
+                server.stdin.write((frame + "\n").encode())
                 server.stdin.flush()
                 _t.sleep(0.3)
         except BrokenPipeError:
@@ -106,46 +158,46 @@ def run_a2a(binary, workdir):
             server.kill()
         tap.wait(timeout=30)
     finally:
-        if tap.poll() is None:
-            tap.kill()
-        if tap.stderr:
-            tap.stderr.close()
+        finish_tap(tap)
 
-    records = [
-        json.loads(l)
-        for l in Path(ledger).read_text().splitlines()
-        if l.strip()
-    ]
+    records = export_records(binary, ledger)
     a2a = [
         r for r in records
         if r.get("verdict") == "a2a" or r.get("event") == "a2a-handoff"
-        if r.get("payload", {}).get("payload", {}).get("method")
-        or r.get("method") == "message/send"
-        or r.get("payload", {}).get("request", {}).get("method") == "message/send"
+        and r.get("payload", {}).get("request", {}).get("method")
+        == "message/send"
     ]
-    covered = len(a2a) > 0
+    owned = [r for r in a2a if json.dumps(r).find(marker) >= 0]
+    covered = len(owned) > 0
     return {
         "transport": "a2a",
         "verdict": "covered" if covered else "gap",
-        "evidence": f"a2a-verdict records={len(a2a)} total={len(records)}",
+        "evidence": "owned a2a records=" + str(len(owned))
+        + " total=" + str(len(records)) + " marker=" + marker,
     }
 
 
-def run_tls(binary, workdir):
+def run_tls(binary, workdir, marker):
     """The Streamable HTTP row: the TLS fixture's framed POST reply
-    (the C113 face). Covered when the boundary evidence rides."""
-    import shutil  # noqa: PLC0415
-
+    (the C113 face). Covered requires THIS run's own boundary evidence
+    tied to the run's marker."""
     fx = Path(workdir) / "tls"
     fx.mkdir(parents=True, exist_ok=True)
     cert = fx / "tls-cert.pem"
     key = fx / "tls-key.pem"
-    gen = subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048",
-         "-keyout", str(key), "-out", str(cert),
-         "-days", "2", "-nodes", "-subj", "/CN=lab"],
-        capture_output=True,
-    )
+    try:
+        gen = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(key), "-out", str(cert),
+             "-days", "2", "-nodes", "-subj", "/CN=lab"],
+            capture_output=True,
+        )
+    except FileNotFoundError as e:
+        return {
+            "transport": "streamable-http-tls",
+            "verdict": "gap",
+            "evidence": "the openssl face missing: " + str(e),
+        }
     if gen.returncode != 0:
         return {
             "transport": "streamable-http-tls",
@@ -172,7 +224,7 @@ def run_tls(binary, workdir):
 
         _t.sleep(1.2)
         server = subprocess.Popen(
-            ["python3", "-u", str(tmp_fixture), "server", "0", "m003", "http"],
+            ["python3", "-u", str(tmp_fixture), "server", "0", marker, "http"],
             env={
                 "AGENTPCAP_TLS_CERT": str(cert),
                 "AGENTPCAP_TLS_KEY": str(key),
@@ -183,7 +235,7 @@ def run_tls(binary, workdir):
         )
         port = server.stdout.readline().decode().strip()
         client = subprocess.run(
-            ["python3", "-u", str(tmp_fixture), "client", port, "m003", "http"],
+            ["python3", "-u", str(tmp_fixture), "client", port, marker, "http"],
             capture_output=True,
         )
         _t.sleep(4)
@@ -192,38 +244,31 @@ def run_tls(binary, workdir):
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:
             server.kill()
-        records = [
-            json.loads(l)
-            for l in ledger.read_text().splitlines()
-            if l.strip()
-        ]
+        records = export_records(binary, ledger)
         boundary = [r for r in records if "tls-boundary" in json.dumps(r)]
-        # the M003 row measures COVERAGE — the capture face per transport.
-        # The capture face rode when the boundary evidence lands on this
-        # run's ledger (the run-scoped tempdir file): the merge face rides
-        # the C113 receipts and may key unresolved under the ADR-0004
-        # pop-time race without narrowing the coverage.
-        covered = len(boundary) > 0 and client.returncode == 0
+        # the coverage tie: this run's own marker rides the boundary rows
+        # — the fixture's tools-call carries the marker parameter
+        owned = [r for r in boundary if json.dumps(r).find(marker) >= 0]
+        covered = len(owned) > 0 and client.returncode == 0
         events = sorted({r["event"] for r in records if r.get("event")})
         return {
             "transport": "streamable-http-tls",
             "verdict": "covered" if covered else "gap",
-            "evidence": "boundary records=" + str(len(boundary))
-            + " port=" + port + " client-rc=" + str(client.returncode)
+            "evidence": "owned boundary records=" + str(len(owned))
+            + " marker=" + marker + " port=" + port
+            + " client-rc=" + str(client.returncode)
             + " events=" + json.dumps(events),
         }
     finally:
-        if tap.poll() is None:
-            tap.kill()
+        finish_tap(tap)
 
 
-def run_sse(binary, workdir):
+def run_sse(binary, workdir, marker):
     """The legacy HTTP+SSE row: the `data:`-line parse face shipped in
     the alpha2 lane, but the capture face that delivers the SSE reply
     holds on the stale-content defect — the gap is named with its issue
-    link. The row runs the fixture's sse mode and reports the honest
-    face."""
-    del binary, workdir
+    link. The row reports the honest face."""
+    del binary, workdir, marker
     return {
         "transport": "legacy-http-sse",
         "verdict": "gap",
@@ -231,9 +276,6 @@ def run_sse(binary, workdir):
         "https://github.com/shsingh/agentpcap/issues/83 "
         "(the parse face shipped; the capture cell held with its red receipt)",
     }
-
-
-ROWS = [run_stdio, run_tls, run_sse, run_a2a]
 
 
 def main(argv=None):
@@ -246,12 +288,18 @@ def main(argv=None):
     workdir = Path(args.workdir)
     workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-    matrix = [fn(binary, workdir) for fn in ROWS]
-    gaps = [r["transport"] for r in matrix if r["verdict"] == "gap"]
+    marker = os.urandom(6).hex()
+    matrix = [
+        run_stdio(binary, workdir, marker),
+        run_tls(binary, workdir, marker),
+        run_sse(binary, workdir, marker),
+        run_a2a(binary, workdir, marker),
+    ]
     receipt = {
         "item": "M003",
+        "marker": marker,
         "matrix": matrix,
-        "gaps": gaps,
+        "gaps": [r["transport"] for r in matrix if r["verdict"] == "gap"],
     }
     print(json.dumps(receipt))
     # the acceptance: the full matrix reported; the gaps enumerated,
