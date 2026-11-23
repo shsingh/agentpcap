@@ -31,16 +31,50 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
     let before = sessions(before_path, "agentpcap.diff")?;
     let after = sessions(after_path, "agentpcap.diff")?;
     // The sessions of the two sets key by the server face when present
-    // (the operator's per-server drift), else by the session id face.
+    // (the operator's per-server drift — the same served server tracks
+    // across time), else by the session id face.
+    //
+    // The served name identifies the SERVER SOFTWARE, not a unique
+    // instance: when one set holds two sessions advertising the same
+    // (host, server) face, a server key would fold them into one map
+    // slot — only the last session in order survives, and an unchanged
+    // sibling would hide its peer's changed tools or capabilities
+    // (peer review 4662429079). A duplicated face rides the session-id
+    // keys in BOTH sets, so every distinct peer keeps its own slot: an
+    // unmatched peer surfaces as whole-scope drift, and a matched peer
+    // keeps per-instance faces. The per-server key only fires when the
+    // (host, server) face names exactly one session on each side.
+    // The dup scan runs PER SET: a server appearing once in each set is
+    // the between-captures shape (two fresh taps, new pipe faces per
+    // capture) and pairs by the server face — the fallback keys never
+    // pair across captures (peer review 4662904887). Only a duplicate
+    // WITHIN one set marks the face shared.
+    let mut duplicated = std::collections::BTreeSet::new();
+    for set in [&before, &after] {
+        let mut seen = std::collections::BTreeSet::new();
+        for v in set {
+            let server = v["server"].as_str().unwrap_or_default();
+            if server.is_empty() {
+                continue;
+            }
+            let host = v["host"].as_str().unwrap_or_default();
+            if !seen.insert(format!("{host}@{server}")) {
+                duplicated.insert(format!("{host}@{server}"));
+            }
+        }
+    }
     let key = |v: &Value| -> String {
-        // the (host, session) face keys the diff: several peers run
-        // the same server software, two nodes hold the same pid space,
-        // and every session keeps its own drift face
-        format!(
-            "session:{}@{}",
-            v["host"].as_str().unwrap_or_default(),
-            v["session_id"].as_str().unwrap_or_default()
-        )
+        let host = v["host"].as_str().unwrap_or_default();
+        let server = v["server"].as_str().unwrap_or_default();
+        if !server.is_empty() && !duplicated.contains(&format!("{host}@{server}")) {
+            // the per-server drift: the served name tracks across time
+            format!("server:{host}@{server}")
+        } else {
+            format!(
+                "session:{host}@{}",
+                v["session_id"].as_str().unwrap_or_default()
+            )
+        }
     };
     let before_map: std::collections::BTreeMap<String, Value> = before
         .iter()

@@ -108,6 +108,35 @@ def rescoped(events):
     return None
 
 
+def run_between(binary, workdir, window, marker, strip_caps=False, attempt=1):
+    """The issue #28 face: TWO served sessions with the SEEDS injected
+    per session — the served tool set changes between the sessions (the
+    description changed, one tool added, one removed, the capability
+    face changed). The CLI diff must surface the drift from ledger data
+    alone — never decryption — and the drift events must match the
+    injected change set EXACTLY. Each attempt takes FRESH capture paths
+    (the attempt tag), and strip_caps rides both servers so the negative
+    face strips the advertised capability member entirely.
+    Returns (before_ledger, after_ledger)."""
+    spec_before = ServerSpec(
+        tools_by_call=[TOOLS_V1],
+        capabilities_by_call=[CAP_V1] if not strip_caps else [{}],
+        tool_result=TOOL_RESULT,
+        server_name="harness-server-" + marker,
+        strip_caps=strip_caps,
+    )
+    spec_after = ServerSpec(
+        tools_by_call=[TOOLS_V2],
+        capabilities_by_call=[CAP_V2] if not strip_caps else [{}],
+        tool_result=TOOL_RESULT,
+        server_name="harness-server-" + marker,
+        strip_caps=strip_caps,
+    )
+    b_ledger, _ = run_scenario(binary, workdir, "sess1-a" + str(attempt), window, spec_before)
+    a_ledger, _ = run_scenario(binary, workdir, "sess2-a" + str(attempt), window, spec_after)
+    return b_ledger, a_ledger
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True)
@@ -118,11 +147,140 @@ def main(argv=None):
         help="the negative face: the seeds carry no capability member "
              "at all — the fidelity face fails by design",
     )
+    ap.add_argument(
+        "--retries", type=int, default=2,
+        help="between-sessions only: bounded fresh re-captures when a "
+             "drift face races (each attempt is a FULL fresh capture, "
+             "never a cherry-picked face); the receipts name the attempts",
+    )
+    ap.add_argument(
+        "--mode", default="midflight",
+        choices=["midflight", "between-sessions"],
+        help="midflight: one session re-scopes inline (C117); "
+             "between-sessions: two served sessions carry the injected "
+             "change set (issue #28)",
+    )
     args = ap.parse_args(argv)
 
     binary = str(Path(args.binary))
     workdir = Path(args.workdir)
     workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    if args.mode == "between-sessions":
+        # the #28 face: the seeds injected BETWEEN two served sessions.
+        # The fp merge face races under the ADR-0004 pop-time family, so
+        # the face runs up to 1 + retries FRESH captures (a new marker
+        # each) and reports the last attempt, naming the attempt count —
+        # a retry is a fresh capture, never a face cherry-pick.
+        # the expected fingerprints ride the injected face: sha256 over
+        # the compact, sorted capability faces (the reassembler's face)
+        import hashlib  # noqa: PLC0415
+
+        def fingerprint(caps):
+            return hashlib.sha256(
+                json.dumps(caps, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:16]
+
+        fp_expected = {"before": fingerprint(CAP_V1), "after": fingerprint(CAP_V2)}
+        attempts = 0
+        receipt = None
+        for attempt in range(1 + max(0, args.retries)):
+            attempts = attempt + 1
+            marker = os.urandom(6).hex()
+            try:
+                b_ledger, a_ledger = run_between(
+                    binary, workdir, args.window, marker, args.strip_caps, attempt
+                )
+            except SystemExit as e:
+                receipt = {
+                    "item": "M004", "mode": "between-sessions",
+                    "result": "fail", "reason": str(e),
+                    "attempts": attempts,
+                }
+                continue
+            b_records = export_records(binary, b_ledger)
+            a_records = export_records(binary, a_ledger)
+            # the ownership tie: the marker rides the serverInfo name on
+            # this run's init records — the run's session ids come from
+            # those inits, and ALL records of those sessions (the
+            # tools-list and tools-call faces) ride the comparison
+            def own_session(records):
+                for r in records:
+                    if r.get("session_id") and json.dumps(r).find(marker) >= 0:
+                        return r["session_id"]
+                return None
+
+            b_sid = own_session(b_records)
+            a_sid = own_session(a_records)
+            if b_sid is None or a_sid is None:
+                receipt = {
+                    "item": "M004", "mode": "between-sessions",
+                    "result": "fail",
+                    "reason": "the run's own sessions never landed",
+                    "attempts": attempts,
+                }
+                continue
+            b_own = [r for r in b_records if r.get("session_id") == b_sid]
+            a_own = [r for r in a_records if r.get("session_id") == a_sid]
+            if not b_own or not a_own:
+                receipt = {
+                    "item": "M004", "mode": "between-sessions",
+                    "result": "fail",
+                    "reason": "the run's own sessions never landed",
+                    "attempts": attempts,
+                }
+                continue
+            before = owner_file(
+                workdir / (marker + ".before.jsonl"),
+                "\n".join(json.dumps(r) for r in b_own) + "\n",
+            )
+            after = owner_file(
+                workdir / (marker + ".after.jsonl"),
+                "\n".join(json.dumps(r) for r in a_own) + "\n",
+            )
+            events = drifted_drift(binary, before, after)
+            kinds = sorted(e["kind"] for e in events)
+            read = descriptions(events).get("read", {})
+            added, removed = run_names(events)
+            rescope = rescoped(events)
+            exact = (
+                kinds == SEEDED_KINDS
+                and read.get("before") == "read a file"
+                and read.get("after") == "read a file v2"
+                and sorted(added) == SEEDED_ADDED
+                and sorted(removed) == SEEDED_REMOVED
+                and rescope is not None
+                and rescope["before"] == fp_expected["before"]
+                and rescope["after"] == fp_expected["after"]
+                and rescope["before"] != rescope["after"]
+            )
+            receipt = {
+                "item": "M004",
+                "mode": "between-sessions",
+                "result": "pass" if exact else "fail",
+                "exact": exact,
+                "attempts": attempts,
+                "injected": {
+                    "kinds": SEEDED_KINDS,
+                    "descriptions": {"read": {
+                        "before": "read a file", "after": "read a file v2"}},
+                    "added": SEEDED_ADDED,
+                    "removed": SEEDED_REMOVED,
+                    "rescoped": fp_expected,
+                },
+                "emitted": {
+                    "kinds": kinds,
+                    "descriptions": {"read": read},
+                    "added": sorted(added),
+                    "removed": sorted(removed),
+                    "rescoped": rescope,
+                },
+                "marker": marker,
+            }
+            if exact:
+                break
+        print(json.dumps(receipt))
+        return 0 if receipt.get("exact") else 1
 
     run_token = "harness-" + os.urandom(6).hex()
     spec = ServerSpec(
