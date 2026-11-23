@@ -44,9 +44,14 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
     // unmatched peer surfaces as whole-scope drift, and a matched peer
     // keeps per-instance faces. The per-server key only fires when the
     // (host, server) face names exactly one session on each side.
-    let mut seen = std::collections::BTreeSet::new();
+    // The dup scan runs PER SET: a server appearing once in each set is
+    // the between-captures shape (two fresh taps, new pipe faces per
+    // capture) and pairs by the server face — the fallback keys never
+    // pair across captures (peer review 4662904887). Only a duplicate
+    // WITHIN one set marks the face shared.
     let mut duplicated = std::collections::BTreeSet::new();
     for set in [&before, &after] {
+        let mut seen = std::collections::BTreeSet::new();
         for v in set {
             let server = v["server"].as_str().unwrap_or_default();
             if server.is_empty() {
