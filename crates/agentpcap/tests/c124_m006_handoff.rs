@@ -15,7 +15,6 @@ fn bin() -> &'static str {
 }
 
 #[test]
-#[ignore = "held until issue #96: the sampler drops burst writes after the first exchange"]
 fn c124_the_gate_eats_its_input_inside_the_two_second_budget() {
     let dir = tempfile::tempdir().unwrap();
     let eval_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -62,8 +61,13 @@ fn c124_the_gate_eats_its_input_inside_the_two_second_budget() {
     // every burst frame's verdict row landed
     assert_eq!(
         receipt["frames_written"].as_u64(),
-        Some(16),
-        "the burst schedule writes 4 frames x 4 bursts"
+        Some(17),
+        "the initialize rides plus 4 frames x 4 bursts"
+    );
+    assert_eq!(
+        receipt["landed"].as_u64(),
+        Some(17),
+        "every frame's verdict row lands"
     );
     // the distribution posts and the budget comparison rides explicit
     assert!(
