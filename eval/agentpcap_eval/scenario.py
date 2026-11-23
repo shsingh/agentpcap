@@ -137,6 +137,11 @@ def run_scenario(binary, workdir, name, window, spec):
                 server.stdin.write((f + "\n").encode())
                 server.stdin.flush()
                 time.sleep(0.3)
+            # the writer stays alive past the pop window: the ADR-0004
+            # fd resolve face at pop needs the writer's fds, and a writer
+            # that dies inside the window keys the ADR-0004 race face —
+            # the fidelity item needs the resolved faces, not the race
+            time.sleep(1.5)
         except BrokenPipeError:
             pass
         try:

@@ -31,16 +31,20 @@ pub fn drift(before_path: &std::path::Path, after_path: &std::path::Path) -> Res
     let before = sessions(before_path, "agentpcap.diff")?;
     let after = sessions(after_path, "agentpcap.diff")?;
     // The sessions of the two sets key by the server face when present
-    // (the operator's per-server drift), else by the session id face.
+    // (the operator's per-server drift — the same served server tracks
+    // across time), else by the session id face.
     let key = |v: &Value| -> String {
-        // the (host, session) face keys the diff: several peers run
-        // the same server software, two nodes hold the same pid space,
-        // and every session keeps its own drift face
-        format!(
-            "session:{}@{}",
-            v["host"].as_str().unwrap_or_default(),
-            v["session_id"].as_str().unwrap_or_default()
-        )
+        let host = v["host"].as_str().unwrap_or_default();
+        let server = v["server"].as_str().unwrap_or_default();
+        if !server.is_empty() {
+            // the per-server drift: the served name tracks across time
+            format!("server:{host}@{server}")
+        } else {
+            format!(
+                "session:{host}@{}",
+                v["session_id"].as_str().unwrap_or_default()
+            )
+        }
     };
     let before_map: std::collections::BTreeMap<String, Value> = before
         .iter()
