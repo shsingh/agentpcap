@@ -3,7 +3,6 @@
 // sample of its own writer. Wire cap: 32 payload bytes.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use agentpcap_collector::PipeSample;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -30,11 +29,11 @@ fn p002_probe_emits_and_userspace_reads_back() {
     prog.attach("syscalls", "sys_enter_write")
         .expect("attach to sys_enter_write failed");
 
-    let mut queue: aya::maps::Queue<_, PipeSample> = bpf
+    let mut queue: aya::maps::RingBuf<_> = bpf
         .take_map("pipe_events")
         .expect("pipe_events map missing")
         .try_into()
-        .expect("pipe_events map is not a queue");
+        .expect("pipe_events map is not a ring");
 
     // Our own writes drive the probe; the round drains the queue and
     // searches for the marker payload this test writes. Host-wide
@@ -59,8 +58,8 @@ fn p002_probe_emits_and_userspace_reads_back() {
         }
         let _ = f.flush();
         for _ in 0..2048 {
-            match queue.pop(0) {
-                Ok(s) => {
+            match agentpcap_collector::ring_sample(&mut queue) {
+                Some(s) => {
                     let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
                     if n >= marker.len()
                         && s.first_bytes[..n].windows(marker.len()).any(|w| w == *marker)
@@ -69,7 +68,7 @@ fn p002_probe_emits_and_userspace_reads_back() {
                         break;
                     }
                 }
-                Err(_) => break,
+                None => break,
             }
         }
         if !found {
