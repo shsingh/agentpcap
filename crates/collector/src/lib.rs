@@ -136,54 +136,59 @@ pub fn resolved_pipe_channel(
     failed: &mut ChannelRetryCache,
     failed_ttl: Duration,
 ) -> ChanResolve {
-    resolved_pipe_channel_dbg(pid, fd, pid, failed, failed_ttl)
-}
-
-/// The same face carrying the WIRE's raw pid for the debug receipt: the
-/// tap's pid-space offset can split raw − machine, and the readlink
-/// faces answer whichever pid actually exists in /proc.
-pub fn resolved_pipe_channel_dbg(
-    pid: u32,
-    fd: u32,
-    raw_pid: u32,
-    failed: &mut ChannelRetryCache,
-    failed_ttl: Duration,
-) -> ChanResolve {
+    // the cache face: the kind rides its OWN value
     if let Some((kind, at)) = failed.get(&(pid, fd)) {
         if at.elapsed() <= failed_ttl {
-            // the cached face rides its OWN kind: a skipped non-pipe fd
-            // stays Skipped (the no-record face), a failed lookup stays
-            // Failed (the ADR-0004 unresolved record). One kind for both
-            // made every cached skip ride as a row (the C116 noise face).
             return match kind {
                 ChanKind::Skipped => ChanResolve::Skipped,
                 ChanKind::Failed => ChanResolve::Failed,
             };
         }
     }
-    for attempt in 0..5 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_micros(300));
-        }
-        let link = match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        let text = link.to_string_lossy().to_string();
-        return match text
-            .strip_suffix(']')
-            .and_then(|rest| rest.strip_prefix("pipe:["))
-        {
-            Some(inode) => ChanResolve::Pipe(format!("pipe:{inode}")),
-            // a resolvable fd naming anything else is live
-            // non-pipe traffic: the skipped face
-            _ => {
-                failed.insert((pid, fd), (ChanKind::Skipped, std::time::Instant::now()));
-                ChanResolve::Skipped
-            }
-        };
+    // THE PIDFD FACE (issue #85): `/proc/{pid}/fd/{fd}` readlink answers
+    // rc 1, silently, for regular-FILE fds on this host (the OrbStack
+    // translation face — pipes and /dev/null resolve fine). The wire-true
+    // face: duplicate the fd into this process with pidfd_getfd and fstat
+    // it — `st_ino` carries the pipe's real inode and `S_ISFIFO` carries
+    // the kind, so `pipe:{inode}` rides the actual face.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0) };
+    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
+        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} pidfd_open={pidfd}");
     }
-    failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));    ChanResolve::Failed
+    if pidfd < 0 {
+        // the writer's /proc entry is gone: the ADR-0004 unresolved face
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        return ChanResolve::Failed;
+    }
+    let dup = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd, fd as libc::c_long, 0) };
+    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
+        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} pidfd_getfd={dup}");
+    }
+    if dup < 0 {
+        // the fd closed between the pop and the resolve: the same race
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        unsafe { libc::close(pidfd as i32) };
+        return ChanResolve::Failed;
+    }
+    unsafe { libc::close(pidfd as i32) };
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let st_rc = unsafe { libc::fstat(dup as i32, &mut st) };
+    unsafe { libc::close(dup as i32) };
+    if st_rc != 0 {
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        return ChanResolve::Failed;
+    }
+    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
+        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} fstat_mode={:#x} ino={}", st.st_mode, st.st_ino);
+    }
+    if (st.st_mode & libc::S_IFMT) == libc::S_IFIFO {
+        ChanResolve::Pipe(format!("pipe:{}", st.st_ino))
+    } else {
+        // a resolvable fd naming no pipe (a file, a terminal): the
+        // no-record face
+        failed.insert((pid, fd), (ChanKind::Skipped, std::time::Instant::now()));
+        ChanResolve::Skipped
+    }
 }
 
 /// The bound faces (spec section 11's constant-memory face): when a

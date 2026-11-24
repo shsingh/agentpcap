@@ -753,8 +753,8 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             // parse.
             let mut pipe_channel: Option<String> = None;
             if class == "pipe" {
-                match agentpcap_collector::resolved_pipe_channel_dbg(
-                    machine_pid, s.fd, s.pid, &mut chan_cache,
+                match agentpcap_collector::resolved_pipe_channel(
+                    machine_pid, s.fd, &mut chan_cache,
                     Duration::from_secs(2),
                 ) {
                     agentpcap_collector::ChanResolve::Skipped => {
@@ -1058,6 +1058,16 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                         }
                     }
                     None => {
+                        // The fd-unresolved face dedups on the CONTENT
+                        // hash alone: a sink that re-writes the same
+                        // agent bytes (its own pop-window death already
+                        // keyed the first copy unresolved) never lands a
+                        // second row for the same capture.
+                        let dedup_face = if died_unresolved && class == "pipe" {
+                            format!("t:{:016x}", fnv64(payload_bytes))
+                        } else {
+                            format!("{resolved}:t:{:016x}", fnv64(payload_bytes))
+                        };
                         let ev = Event {
                             ts: now_rfc3339(),
                             host: host.clone(),
@@ -1073,10 +1083,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                             protocol_version: None,
                             session_id: None,
                             peer: resolved.clone(),
-                            dedup: format!(
-                                "{resolved}:t:{:016x}",
-                                fnv64(payload_bytes)
-                            ),
+                            dedup: dedup_face,
                             payload: None,
                             evidence: Some(evidence),
                             source: "tap".into(),
