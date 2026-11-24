@@ -97,6 +97,18 @@ fn c118_the_m002_item_answers_the_tap_delta_against_the_figure() {
         Some(if pass { "pass" } else { "fail" }),
         "the verdict reads from the measured faces, never defaulted"
     );
+    // The drain face (the busy-queue face): the on-phase ledger carries
+    // every frame's rows — a drain that loses samples (a busy queue
+    // stalled behind an empty one) rides fewer rows than frames. The
+    // dedupe may fold rows (repeat frames share keys), so the face
+    // asserts the rows never drop BELOW the frame count by more than
+    // the dedupe fold — every frame lands AT LEAST one row family.
+    let rows = receipt["tap_rows"].as_f64().expect("the ledger rows ride");
+    let frames = frames as f64;
+    assert!(
+        rows * 1.0 >= frames * 0.5,
+        "the drain never loses a frame face: tap_rows {rows} vs frames {frames}"
+    );
     // the wall face: the delta sits under the published figure on this
     // host (the CPU face is the item's gate face and may fail honestly)
     assert!(

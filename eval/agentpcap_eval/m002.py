@@ -63,8 +63,12 @@ def phase(binary, workdir, tap_on, frames, repeats, gap):
     """One phase. With the tap on, the tap starts BEFORE the measured
     window (the calibration face sits outside it) and its window
     outlasts the repeats; the tap's own CPU consumption rides
-    `/proc/<tap>/stat` across the window. Returns (min_ms, tap_cpu_s)."""
+    `/proc/<tap>/stat` across the window. Returns (min_ms, tap_cpu_s,
+    walls) — walls carries each repeat's wall in milliseconds so the
+    CPU share can divide by the repeats' total. The ledger row count
+    rides `tap_rows` (the drain face: every frame lands, none drops)."""
     tap = None
+    ledger = None
     if tap_on:
         ledger = workdir / "m002.jsonl"
         tap = subprocess.Popen(
@@ -77,14 +81,16 @@ def phase(binary, workdir, tap_on, frames, repeats, gap):
         cpu_start = tap_cpu_seconds(tap.pid)
     try:
         minima = None
+        walls = []
         for _ in range(repeats):
             ms = workload(binary, workdir, frames, gap)
+            walls.append(ms)
             if minima is None or ms < minima:
                 minima = ms
         cpu_s = 0.0
         if tap is not None:
             cpu_s = tap_cpu_seconds(tap.pid) - cpu_start
-        return minima, cpu_s
+        return minima, cpu_s, walls
     finally:
         if tap is not None:
             tap.wait(timeout=20)
@@ -107,12 +113,23 @@ def main(argv=None):
     off_dir = tempfile.TemporaryDirectory(dir=workdir)
     on_dir = tempfile.TemporaryDirectory(dir=workdir)
 
-    off_ms = phase(binary, Path(off_dir.name), False, args.frames, args.repeats, FRAME_GAP_S)[0]
-    on_ms, tap_cpu_s = phase(binary, Path(on_dir.name), True, args.frames, args.repeats, FRAME_GAP_S)
+    off_ms, _, _ = phase(binary, Path(off_dir.name), False, args.frames, args.repeats, FRAME_GAP_S)
+    on_ms, tap_cpu_s, walls = phase(binary, Path(on_dir.name), True, args.frames, args.repeats, FRAME_GAP_S)
 
     delta_pct = (on_ms - off_ms) / off_ms * 100.0
-    wall_secs = on_ms / 1000.0
+    # The CPU denominator rides the repeats' TOTAL wall: the tap's CPU
+    # face spans every repeat, so the per-repeat minima would overstate
+    # the percentage ~repeats fold (the honest share = the CPU over the
+    # window the CPU was measured in).
+    wall_secs = sum(ms / 1000.0 for ms in walls)
     cpu_pct = tap_cpu_s / wall_secs * 100.0 if wall_secs > 0 else 0.0
+    # The drain face: the on-phase ledger carries every frame's rows —
+    # a drain that loses samples (a busy queue behind an empty one)
+    # rides fewer rows than frames. The count reads after the tap exits.
+    ledger_path = Path(on_dir.name) / "m002.jsonl"
+    tap_rows = sum(
+        1 for line in ledger_path.open(encoding="utf-8") if line.strip()
+    ) if ledger_path.exists() else 0
     ok = delta_pct <= args.figure_pct and cpu_pct <= args.figure_pct
     receipt = {
         "item": "M002",
@@ -123,6 +140,7 @@ def main(argv=None):
         "tap_cpu_pct": round(cpu_pct, 3),
         "figure_pct": args.figure_pct,
         "workload": {"frames": args.frames, "repeats": args.repeats},
+        "tap_rows": tap_rows,
     }
     print(json.dumps(receipt))
     return 0 if ok else 1

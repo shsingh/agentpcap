@@ -601,12 +601,19 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
-    // the drain alternates the two class queues (ADR-0005): each cycle
-    // gives one queue the first share and falls back to the other, so
-    // sustained pipe traffic never starves the socket face
+    // the drain alternates the three class queues (ADR-0005): the
+    // rotation gives each queue its fair share and a landed share
+    // sticks (bounded) so a burst drains in batch faces
     let mut turn: u8 = 0;
     let sweep_every = Duration::from_secs(2);
     let mut last_sweep = Instant::now();
+    // the pending-sweep gate: the reassembler's sweep face iterates the
+    // pending parks, and at the 2 ms turn face that face rides per-turn
+    // work into the tap's hot loop. A 50 ms cadence keeps the expiry
+    // latency faces (the no-response and the idle-session faces) far
+    // inside the M006 2 s budget while dropping the per-turn cost.
+    let pending_sweep_every = Duration::from_millis(50);
+    let mut last_pending_sweep = Instant::now();
     while !expired() && !STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
         // the pending sweep: a thread killed inside its TLS call parks
         // an entry nobody collects — the face deletes an entry once its
@@ -645,52 +652,49 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         // ride the no-response face once) and idle sessions — the
         // deployed service never grows its in-memory faces without
         // limit
-        for ev in reassembler.sweep() {
-            if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
-                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
-                    eprintln!("agentpcap tap: the dedupe skipped the sweep event: its session event already rides the ledger");
-                } else {
-                    eprintln!("agentpcap tap: {e}");
-                    return ExitCode::FAILURE;
+        if last_pending_sweep.elapsed() >= pending_sweep_every {
+            last_pending_sweep = Instant::now();
+            for ev in reassembler.sweep() {
+                if let Err(e) = writer.append(&serde_json::to_value(&ev).unwrap()) {
+                    if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                        eprintln!("agentpcap tap: the dedupe skipped the sweep event: its session event already rides the ledger");
+                    } else {
+                        eprintln!("agentpcap tap: {e}");
+                        return ExitCode::FAILURE;
+                    }
                 }
             }
         }
+        // The share face: the lead share pops; on an empty lead the
+        // other shares ride the SAME turn (the ADR-0005 fallback face)
+        // so a busy queue never waits a backoff step behind an idle
+        // one. Only when ALL three pop empty does the idle backoff
+        // ride. The old flat chain burned two extra empty pops per
+        // sampled turn; this face keeps the fallback but skips the
+        // fallback pops after a lead hit (one pop per sampled turn).
         let sample_class = match turn % 3 {
-            0 => queue
-                .pop(0)
-                .ok()
-                .map(|s| ("pipe", s))
-                .or_else(|| {
-                    sock_queue
-                        .pop(0)
-                        .ok()
-                        .map(|s| ("socket", s))
-                        .or_else(|| tls_queue.pop(0).ok().map(|s| ("tls", s)))
-                }),
-            1 => sock_queue
-                .pop(0)
-                .ok()
-                .map(|s| ("socket", s))
-                .or_else(|| {
-                    tls_queue
-                        .pop(0)
-                        .ok()
-                        .map(|s| ("tls", s))
-                        .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
-                }),
-            _ => tls_queue
-                .pop(0)
-                .ok()
-                .map(|s| ("tls", s))
-                .or_else(|| {
-                    queue
-                        .pop(0)
-                        .ok()
-                        .map(|s| ("pipe", s))
-                        .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
-                }),
+            0 => queue.pop(0).ok().map(|s| ("pipe", s)).or_else(|| {
+                sock_queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("socket", s))
+                    .or_else(|| tls_queue.pop(0).ok().map(|s| ("tls", s)))
+            }),
+            1 => sock_queue.pop(0).ok().map(|s| ("socket", s)).or_else(|| {
+                tls_queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("tls", s))
+                    .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
+            }),
+            _ => tls_queue.pop(0).ok().map(|s| ("tls", s)).or_else(|| {
+                queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("pipe", s))
+                    .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
+            }),
         };
-        turn = (turn + 1) % 3;
         let Some((class, s)) = sample_class else {
             // the idle drain backoff (issue #88): the 2 ms poll burns
             // the tap's CPU idle over the M002 figure — the poll backs
@@ -707,10 +711,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             } else {
                 2
             };
+            turn = (turn + 1) % 3;
             std::thread::sleep(Duration::from_millis(step));
             continue;
         };
         idle_turns = 0;
+        // the rotation face: every turn advances the share — a landed
+        // share advances like an empty one, so a sustained share never
+        // starves the other two (ADR-0005's fairness face)
+        turn = (turn + 1) % 3;
         {
             seq += 1;
             let machine_pid = s.pid as i64 - offset;
