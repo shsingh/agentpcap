@@ -716,14 +716,18 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 continue;
             }
             let mut batch = 0u32;
-            while let Some(item) = ring.next() {
+            loop {
                 // the batch bound (peer review, ringbuf leaf): a hot
                 // producer never holds the drain hostage — at most 64
                 // items per ring per cycle, then the cycle re-polls and
-                // the other shares ride. The stop and the duration
-                // faces recheck between rings.
+                // the other shares ride. The bound rides BEFORE the
+                // next() face: a fetched item the drain never processes
+                // would drop on the guard (a request vanishing or a
+                // captured reply riding a false no-response). The stop
+                // and the duration faces recheck the same way.
                 if batch >= 64 { break; }
                 if expired() || STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                let Some(item) = ring.next() else { break; };
                 batch += 1;
                 let bytes: &[u8] = &item;
                 if bytes.len() < std::mem::size_of::<agentpcap_collector::PipeSample>() {
