@@ -665,20 +665,35 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 }
             }
         }
-        // The share face: each turn pops ONE queue — the rotation
-        // balances the shares (ADR-0005: sustained pipe traffic never
-        // starves the socket or TLS face; each class drains at its
-        // share and the flush face lands any lag). The old fallback
-        // chain popped up to three queues per turn, and on the VM face
-        // each empty pop rides a ~105 us bpf syscall — the strace
-        // receipt: 3201 empty pops at 337 ms, 95% of the tap's
-        // syscall budget (issue #88). One pop per turn turns ~155 ms
-        // of that into ~50 ms and holds the drain's capacity at the
-        // shared cadence.
+        // The share face: the lead share pops; on an empty lead the
+        // other shares ride the SAME turn (the ADR-0005 fallback face)
+        // so a busy queue never waits a backoff step behind an idle
+        // one. Only when ALL three pop empty does the idle backoff
+        // ride. The old flat chain burned two extra empty pops per
+        // sampled turn; this face keeps the fallback but skips the
+        // fallback pops after a lead hit (one pop per sampled turn).
         let sample_class = match turn % 3 {
-            0 => queue.pop(0).ok().map(|s| ("pipe", s)),
-            1 => sock_queue.pop(0).ok().map(|s| ("socket", s)),
-            _ => tls_queue.pop(0).ok().map(|s| ("tls", s)),
+            0 => queue.pop(0).ok().map(|s| ("pipe", s)).or_else(|| {
+                sock_queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("socket", s))
+                    .or_else(|| tls_queue.pop(0).ok().map(|s| ("tls", s)))
+            }),
+            1 => sock_queue.pop(0).ok().map(|s| ("socket", s)).or_else(|| {
+                tls_queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("tls", s))
+                    .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
+            }),
+            _ => tls_queue.pop(0).ok().map(|s| ("tls", s)).or_else(|| {
+                queue
+                    .pop(0)
+                    .ok()
+                    .map(|s| ("pipe", s))
+                    .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
+            }),
         };
         let Some((class, s)) = sample_class else {
             // the idle drain backoff (issue #88): the 2 ms poll burns
