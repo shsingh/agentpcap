@@ -715,7 +715,16 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             if poll_set[face_i].revents & libc::POLLIN == 0 && face_i > 0 {
                 continue;
             }
+            let mut batch = 0u32;
             while let Some(item) = ring.next() {
+                // the batch bound (peer review, ringbuf leaf): a hot
+                // producer never holds the drain hostage — at most 64
+                // items per ring per cycle, then the cycle re-polls and
+                // the other shares ride. The stop and the duration
+                // faces recheck between rings.
+                if batch >= 64 { break; }
+                if expired() || STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                batch += 1;
                 let bytes: &[u8] = &item;
                 if bytes.len() < std::mem::size_of::<agentpcap_collector::PipeSample>() {
                     continue;

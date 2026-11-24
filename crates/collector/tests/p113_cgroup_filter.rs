@@ -6,7 +6,6 @@
 // removed the same write drops while the invoke counter stays
 // current. Spec: docs/spec.md#5-collectors.
 
-use agentpcap_collector::PipeSample;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -61,11 +60,11 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
         .expect("cgroup_seen map missing")
         .try_into()
         .expect("cgroup_seen is not an array");
-    let mut queue: aya::maps::Queue<_, PipeSample> = bpf
+    let mut queue: aya::maps::RingBuf<_> = bpf
         .take_map("sock_events")
         .expect("sock_events missing")
         .try_into()
-        .expect("sock_events is not a queue");
+        .expect("sock_events is not a ring");
 
     // phase 1: an unmarked send calibrates the cgroup id from the
     // kernel's own view; the probe stays silent (no marker ride)
@@ -113,7 +112,7 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
     let deadline = Instant::now() + Duration::from_secs(4);
     let mut rode = false;
     while Instant::now() < deadline {
-        if let Ok(s) = queue.pop(0) {
+        if let Some(s) = agentpcap_collector::ring_sample(&mut queue) {
             let text = String::from_utf8_lossy(
                 &s.first_bytes[..(s.len as usize).min(256)],
             )
@@ -152,7 +151,7 @@ fn p113_the_cgroup_allow_filter_gates_the_socket_queue() {
         send_once(port, "p113-writer-unallowed");
         server.join().expect("the server joins");
         std::thread::sleep(Duration::from_millis(400));
-        while let Ok(s) = queue.pop(0) {
+        while let Some(s) = agentpcap_collector::ring_sample(&mut queue) {
             let text = String::from_utf8_lossy(
                 &s.first_bytes[..(s.len as usize).min(256)],
             )

@@ -4,7 +4,7 @@
 // tracked issue); the alpha1 lineage is userspace-side.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use agentpcap_collector::{resolve_parent, ParentCache, PipeSample};
+use agentpcap_collector::{resolve_parent, ParentCache};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -33,11 +33,11 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
         .attach("syscalls", "sys_enter_write")
         .expect("attach to sys_enter_write failed");
 
-    let mut queue: aya::maps::Queue<_, PipeSample> = bpf
+    let mut queue: aya::maps::RingBuf<_> = bpf
         .take_map("pipe_events")
         .expect("pipe_events map missing")
         .try_into()
-        .expect("pipe_events map is not a queue");
+        .expect("pipe_events map is not a ring");
 
     // the child writes the marker; the probe sees it; the sample's ppid
     // stays 0 — the lineage resolution happens userspace-side
@@ -68,8 +68,8 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
     let mut saw_marker_pid = false;
     while Instant::now() < deadline && !saw_marker_pid {
         for _ in 0..2048 {
-            match queue.pop(0) {
-                Ok(s) => {
+            match agentpcap_collector::ring_sample(&mut queue) {
+                Some(s) => {
                     let prefix = String::from_utf8_lossy(
                         &s.first_bytes[..
                             (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)],
@@ -81,7 +81,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
                         raw_ppid = s.ppid;
                     }
                 }
-                Err(_) => break,
+                None => break,
             }
         }
         if !saw_marker_pid {
@@ -126,8 +126,8 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
         let mut found = None;
         while Instant::now() < deadline {
             for _ in 0..2048 {
-                match queue.pop(0) {
-                    Ok(s) => {
+                match agentpcap_collector::ring_sample(&mut queue) {
+                    Some(s) => {
                         let n = (s.len as usize)
                             .min(agentpcap_collector::PAYLOAD_BYTES_CAP);
                         let prefix = String::from_utf8_lossy(&s.first_bytes[..n]).to_string();
@@ -137,7 +137,7 @@ fn p003_child_lineage_resolves_through_the_proc_scan() {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    None => break,
                 }
             }
             if found.is_some() {

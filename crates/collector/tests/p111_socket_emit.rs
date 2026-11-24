@@ -4,7 +4,6 @@
 // comes from the map, the wire keeps the 272-byte face.
 // Spec: docs/spec.md#5-collectors. Cell ledger: tests/matrix/LEDGER.md.
 
-use agentpcap_collector::PipeSample;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -33,11 +32,11 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
     prog_exit
         .attach("syscalls", "sys_exit_sendto")
         .expect("attach to sys_exit_sendto failed");
-    let mut queue: aya::maps::Queue<_, PipeSample> = bpf
+    let mut queue: aya::maps::RingBuf<_> = bpf
         .take_map("sock_events")
         .expect("sock_events map missing")
         .try_into()
-        .expect("sock_events map is not a queue");
+        .expect("sock_events map is not a ring");
 
     let marker = "p111-marker";
     let line = format!(
@@ -61,8 +60,8 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
     let now = Instant::now();
     let deadline = now + Duration::from_secs(8);
     while Instant::now() < deadline {
-        match queue.pop(0) {
-            Ok(s) => {
+        match agentpcap_collector::ring_sample(&mut queue) {
+            Some(s) => {
                 let text = String::from_utf8_lossy(
                     &s.first_bytes[..(s.len as usize).min(256)],
                 )
@@ -72,7 +71,7 @@ fn p111_the_socket_sample_rides_the_queue_with_its_payload() {
                     return;
                 }
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            None => std::thread::sleep(Duration::from_millis(50)),
         }
     }
     panic!("the socket sample never surfaced in the drain window");

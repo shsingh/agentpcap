@@ -437,6 +437,20 @@ pub fn resolve_parent(pid: u32, cache: &mut ParentCache, ttl: Duration) -> u32 {
 
 const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
 
+/// The ring-pop face: one sample rides out COPIED, so the ring borrow
+/// ends at the call (issue #88's ringbuf leaf). An empty ring, or a
+/// short item the drain can't trust, answers None.
+pub fn ring_sample(ring: &mut aya::maps::RingBuf<aya::maps::MapData>) -> Option<PipeSample> {
+    let item = ring.next()?;
+    let bytes: &[u8] = &item;
+    if bytes.len() < std::mem::size_of::<PipeSample>() {
+        return None;
+    }
+    // SAFETY: the item face carries a whole PipeSample; both sides
+    // const-lock the 272-byte wire layout; the read copies the bytes.
+    Some(unsafe { std::ptr::read(bytes.as_ptr() as *const PipeSample) })
+}
+
 const SAMPLE_BYTES_CAP: usize = 256;
 
 /// Classify one captured pipe write sample.
