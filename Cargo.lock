@@ -21,6 +21,7 @@ name = "agentpcap-collector"
 version = "0.0.1-alpha1"
 dependencies = [
  "aya",
+ "libc",
  "serde_json",
  "tempfile",
 ]
