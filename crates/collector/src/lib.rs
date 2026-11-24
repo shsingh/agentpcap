@@ -51,6 +51,117 @@ pub const PAYLOAD_BYTES_CAP: usize = 256;
 /// of the resolution. The caller drops stale entries.
 pub type ParentCache = std::collections::HashMap<u32, (u32, std::time::Instant)>;
 
+/// The comm-face cache: a writer's /proc/<pid>/comm read rides once per
+/// pid (the per-sample faces read it again on every sample otherwise,
+/// issue #88). The value carries an `Option<String>`: a `None` entry
+/// caches a failed read (the writer exited) so the retry never burns a
+/// syscall per sample.
+pub type CommCache = std::collections::HashMap<u32, (Option<String>, std::time::Instant)>;
+
+/// The channel-face cache: the writer's fd face (the pipe inode or a
+/// failed lookup) rides once per (pid, fd) pair — the per-sample
+/// readlink retries burn the tap's CPU otherwise. The empty string
+/// marks a failed lookup and keeps the unresolved face honest.
+pub type ChannelCache = std::collections::HashMap<(u32, u32), (String, std::time::Instant)>;
+
+/// The cached comm face with the TTL face: `None` = a failed read rides
+/// the unknown writer.
+pub fn cached_comm(
+    pid: u32,
+    cache: &mut CommCache,
+    ttl: Duration,
+) -> Option<String> {
+    if let Some((cached, at)) = cache.get(&pid) {
+        if at.elapsed() <= ttl {
+            return cached.clone();
+        }
+    }
+    let face = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|c| c.trim().to_string());
+    cache.insert(pid, (face.clone(), std::time::Instant::now()));
+    face
+}
+
+/// The failed-lookup cache: a (pid, fd) pair whose fd read just failed
+/// rides once per pair, so a dead writer's samples never re-burn the
+/// retry sleeps per sample (issue #88). SUCCESSES never cache: the fd
+/// face readlinks per sample (a ~2 us syscall), so a long-lived writer
+/// that replaces its pipe, or a descriptor that a new writer reuses,
+/// always answers its own face.
+pub type ChannelRetryCache = std::collections::HashMap<(u32, u32), std::time::Instant>;
+
+/// The channel face: `Some(format!("pipe:{inode}"))` names the channel
+/// the reassembler matches, `None` = the fd named a non-pipe file (the
+/// skipped face — the record rides the fd-unresolved evidence) or the
+/// writer's /proc entry is gone (the fd-unresolved face). The failed
+/// lookups cache per (pid, fd) for `failed_ttl`.
+#[allow(clippy::result_unit_err)]
+pub fn cached_pipe_channel(
+    pid: u32,
+    fd: u32,
+    failed: &mut ChannelRetryCache,
+    failed_ttl: Duration,
+) -> Option<String> {
+    if let Some(at) = failed.get(&(pid, fd)) {
+        if at.elapsed() <= failed_ttl {
+            return None;
+        }
+    }
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_micros(300));
+        }
+        let link = match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let text = link.to_string_lossy().to_string();
+        return match text
+            .strip_suffix(']')
+            .and_then(|rest| rest.strip_prefix("pipe:["))
+        {
+            Some(inode) => Some(format!("pipe:{inode}")),
+            _ => {
+                // a resolvable fd naming anything else is live
+                // non-pipe traffic: the skipped face
+                failed.insert((pid, fd), std::time::Instant::now());
+                None
+            }
+        };
+    }
+    failed.insert((pid, fd), std::time::Instant::now());
+    None
+}
+
+/// The bound faces (spec section 11's constant-memory face): when a
+/// cache carries more than `cap` entries, the stale two seconds and the
+/// burst history drop together — the next sample re-fills the working
+/// set in its first turns. Both per-sample caches ride the same cap.
+pub const CACHE_CAP: usize = 65536;
+
+pub fn shrink_if_over<K, V, F>(
+    cache: &mut std::collections::HashMap<K, V>,
+    cap: usize,
+    stale_after: Duration,
+    stale_of: F,
+) where
+    K: Copy + std::hash::Hash + Eq + 'static,
+    F: Fn(&V) -> std::time::Instant,
+{
+    if cache.len() < cap {
+        return;
+    }
+    let stale: Vec<K> = cache
+        .iter()
+        .filter(|(_, v)| stale_of(v).elapsed() > stale_after)
+        .map(|(k, _)| *k)
+        .collect();
+    for k in stale {
+        cache.remove(&k);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParentCacheEntry {
     pub pid: u32,
