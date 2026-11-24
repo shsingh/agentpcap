@@ -11,7 +11,7 @@ use aya_ebpf::helpers::{
     bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_probe_read_user_buf,
 };
 use aya_ebpf::macros::{map, tracepoint, uretprobe, uprobe};
-use aya_ebpf::maps::{Array, HashMap, Queue};
+use aya_ebpf::maps::{Array, HashMap, RingBuf};
 use aya_ebpf::programs::{ProbeContext, RetProbeContext, TracePointContext};
 
 /// Wire format: must match the collector crate's `PipeSample` exactly
@@ -33,12 +33,12 @@ const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
 const PAYLOAD_BYTES_CAP: u32 = 256;
 
 #[map(name = "pipe_events")]
-static mut EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
+static mut EVENTS: RingBuf = RingBuf::with_byte_size(4194304, 0);
 
 // The socket class rides the same wire; the class comes from the map
 // (ADR-0005), not from a wire discriminant.
 #[map(name = "sock_events")]
-static mut SOCK_EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
+static mut SOCK_EVENTS: RingBuf = RingBuf::with_byte_size(4194304, 0);
 
 /// The saved-receive face: one entry per thread, the exit probe reads
 /// and pops it. The capture runs at EXIT — the entry-time buffer
@@ -250,12 +250,19 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
                 return 0;
             }
         }
-        if EVENTS.push(&sample, 0).is_ok() {
-            if let Some(slot) = CANARY.get_ptr_mut(SLOT_PUSH_OK) {
-                *slot += 1;
+        match EVENTS.reserve::<PipeSample>(0) {
+            Some(mut entry) => {
+                *entry = core::mem::MaybeUninit::new(sample);
+                entry.submit(0);
+                if let Some(slot) = CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                    *slot += 1;
+                }
             }
-        } else if let Some(slot) = CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
-            *slot += 1;
+            None => {
+                if let Some(slot) = CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+                    *slot += 1;
+                }
+            }
         }
     }
     0
@@ -357,12 +364,19 @@ pub fn agentpcap_send_exit(mut ctx: TracePointContext) -> i64 {
             }
             return 0;
         }
-        if SOCK_EVENTS.push(&sample, 0).is_ok() {
-            if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
-                *slot += 1;
+        match SOCK_EVENTS.reserve::<PipeSample>(0) {
+            Some(mut entry) => {
+                *entry = core::mem::MaybeUninit::new(sample);
+                entry.submit(0);
+                if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                    *slot += 1;
+                }
             }
-        } else if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
-            *slot += 1;
+            None => {
+                if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+                    *slot += 1;
+                }
+            }
         }
     }
     0
@@ -486,12 +500,19 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
             }
             return 0;
         }
-        if SOCK_EVENTS.push(&sample, 0).is_ok() {
-            if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
-                *slot += 1;
+        match SOCK_EVENTS.reserve::<PipeSample>(0) {
+            Some(mut entry) => {
+                *entry = core::mem::MaybeUninit::new(sample);
+                entry.submit(0);
+                if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                    *slot += 1;
+                }
             }
-        } else if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
-            *slot += 1;
+            None => {
+                if let Some(slot) = SOCK_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+                    *slot += 1;
+                }
+            }
         }
     }
     0
@@ -504,7 +525,7 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
 // the writer's /proc fd scan, never the ssl struct. The class rides
 // the `tls_events` map.
 #[map(name = "tls_events")]
-static mut TLS_EVENTS: Queue<PipeSample> = Queue::with_max_entries(16384, 0);
+static mut TLS_EVENTS: RingBuf = RingBuf::with_byte_size(4194304, 0);
 
 #[map(name = "tls_canary")]
 static mut TLS_CANARY: Array<u64> = Array::with_max_entries(6, 0);
@@ -658,12 +679,19 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
             }
             return 0;
         }
-        if TLS_EVENTS.push(&sample, 0).is_ok() {
-            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
-                *slot += 1;
+        match TLS_EVENTS.reserve::<PipeSample>(0) {
+            Some(mut entry) => {
+                *entry = core::mem::MaybeUninit::new(sample);
+                entry.submit(0);
+                if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_OK) {
+                    *slot += 1;
+                }
             }
-        } else if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
-            *slot += 1;
+            None => {
+                if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
+                    *slot += 1;
+                }
+            }
         }
     }
     0

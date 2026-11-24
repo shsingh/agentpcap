@@ -10,7 +10,8 @@ use agentpcap_collector::{classify_pipe_sample, resolve_parent, Decision, Parent
 use agentpcap_events::{Event, Mode, Verdict};
 use agentpcap_ledger::{now_rfc3339, LedgerReader, LedgerWriter};
 use agentpcap_reassemble::{Frame, Reassembler};
-use aya::maps::Queue;
+use aya::maps::RingBuf;
+use std::os::fd::AsRawFd;
 use aya::programs::TracePoint;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -298,7 +299,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         return ExitCode::FAILURE;
     }
 
-    let mut queue: Queue<_, agentpcap_collector::PipeSample> =
+    let mut queue: RingBuf<_> =
         match bpf.take_map("pipe_events").expect("queue map").try_into() {
             Ok(q) => q,
             Err(e) => {
@@ -415,7 +416,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         eprintln!("agentpcap tap: the recv probe attach failed: {e}");
         return ExitCode::FAILURE;
     }
-    let mut sock_queue: Queue<_, agentpcap_collector::PipeSample> =
+    let mut sock_queue: RingBuf<_> =
         match bpf.take_map("sock_events").expect("sock queue map").try_into() {
             Ok(q) => q,
             Err(e) => {
@@ -497,7 +498,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             }
         }
     }
-    let mut tls_queue: Queue<_, agentpcap_collector::PipeSample> =
+    let mut tls_queue: RingBuf<_> =
         match bpf.take_map("tls_events").expect("tls queue map").try_into() {
             Ok(q) => q,
             Err(e) => {
@@ -563,14 +564,22 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut offset: Option<i64> = None;
     while Instant::now() < deadline && offset.is_none() {
-        match queue.pop(0) {
-            Ok(s) => {
-                let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
-                if n == expected.len() && s.first_bytes[..n] == expected {
-                    offset = Some(s.pid as i64 - own as i64);
-                }
+        // the ring drain: the consumer rides mmap'd (zero bpf syscalls
+        // per item); an empty ring sleeps the gap and re-polls
+        while let Some(item) = queue.next() {
+            let bytes: &[u8] = &item;
+            if bytes.len() < std::mem::size_of::<agentpcap_collector::PipeSample>() {
+                continue;
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            let s: &agentpcap_collector::PipeSample =
+                unsafe { &*(bytes.as_ptr() as *const _) };
+            let n = (s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP);
+            if n == expected.len() && s.first_bytes[..n] == expected {
+                offset = Some(s.pid as i64 - own as i64);
+            }
+        }
+        if offset.is_none() {
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
     drop(calib_dir);
@@ -601,10 +610,14 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
-    // the drain alternates the three class queues (ADR-0005): the
-    // rotation gives each queue its fair share and a landed share
-    // sticks (bounded) so a burst drains in batch faces
-    let mut turn: u8 = 0;
+    // the wake face descriptors: the three ring fds poll in ONE
+    // syscall per drain cycle; the item reads ride the mmap'd consumer
+    // (zero bpf syscalls per item) — issue #88
+    let mut poll_set = [
+        libc::pollfd { fd: queue.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: sock_queue.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: tls_queue.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
     let sweep_every = Duration::from_secs(2);
     let mut last_sweep = Instant::now();
     // the pending-sweep gate: the reassembler's sweep face iterates the
@@ -665,64 +678,52 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 }
             }
         }
-        // The share face: the lead share pops; on an empty lead the
-        // other shares ride the SAME turn (the ADR-0005 fallback face)
-        // so a busy queue never waits a backoff step behind an idle
-        // one. Only when ALL three pop empty does the idle backoff
-        // ride. The old flat chain burned two extra empty pops per
-        // sampled turn; this face keeps the fallback but skips the
-        // fallback pops after a lead hit (one pop per sampled turn).
-        let sample_class = match turn % 3 {
-            0 => queue.pop(0).ok().map(|s| ("pipe", s)).or_else(|| {
-                sock_queue
-                    .pop(0)
-                    .ok()
-                    .map(|s| ("socket", s))
-                    .or_else(|| tls_queue.pop(0).ok().map(|s| ("tls", s)))
-            }),
-            1 => sock_queue.pop(0).ok().map(|s| ("socket", s)).or_else(|| {
-                tls_queue
-                    .pop(0)
-                    .ok()
-                    .map(|s| ("tls", s))
-                    .or_else(|| queue.pop(0).ok().map(|s| ("pipe", s)))
-            }),
-            _ => tls_queue.pop(0).ok().map(|s| ("tls", s)).or_else(|| {
-                queue
-                    .pop(0)
-                    .ok()
-                    .map(|s| ("pipe", s))
-                    .or_else(|| sock_queue.pop(0).ok().map(|s| ("socket", s)))
-            }),
+        // THE WAKE FACE (issue #88, the ringbuf leaf): the drain polls
+        // all three ring fds in ONE syscall per cycle and drains the
+        // readiness on wake; the item reads ride the mmap'd consumer
+        // (zero bpf syscalls per item). The poll's timeout carries the
+        // idle backoff's step: an idle face sleeps in-kernel and burns
+        // no CPU, a sampled write wakes the drain at once.
+        let step_ms = if idle_turns >= 24 {
+            16
+        } else if idle_turns >= 16 {
+            8
+        } else if idle_turns >= 8 {
+            4
+        } else {
+            2
         };
-        let Some((class, s)) = sample_class else {
-            // the idle drain backoff (issue #88): the 2 ms poll burns
-            // the tap's CPU idle over the M002 figure — the poll backs
-            // off when the queues sit empty and snaps back to 2 ms on
-            // the next sampled write, so the latency face keeps its
-            // hot path and the idle face saves its cycles
+        for p in poll_set.iter_mut() {
+            p.revents = 0;
+        }
+        let woke = unsafe { libc::poll(poll_set.as_mut_ptr(), 3, step_ms) };
+        if woke <= 0 {
+            // the idle face: no ring carries data; the backoff ladder
+            // rides the same 2->16 ms faces the drained loop used
             idle_turns = (idle_turns + 1).min(32);
-            let step = if idle_turns >= 24 {
-                16
-            } else if idle_turns >= 16 {
-                8
-            } else if idle_turns >= 8 {
-                4
-            } else {
-                2
-            };
-            turn = (turn + 1) % 3;
-            std::thread::sleep(Duration::from_millis(step));
             continue;
-        };
+        }
         idle_turns = 0;
-        // the rotation face: every turn advances the share — a landed
-        // share advances like an empty one, so a sustained share never
-        // starves the other two (ADR-0005's fairness face)
-        turn = (turn + 1) % 3;
-        {
-            seq += 1;
-            let machine_pid = s.pid as i64 - offset;
+        // the drain: a ready ring empties in batch; the class rides the
+        // ring's identity — every ready ring drains each cycle (the
+        // ADR-0005 alternation face rides the poll's fairness)
+        for (face_i, ring, class) in [
+            (0usize, &mut queue, "pipe"),
+            (1usize, &mut sock_queue, "socket"),
+            (2usize, &mut tls_queue, "tls"),
+        ] {
+            if poll_set[face_i].revents & libc::POLLIN == 0 && face_i > 0 {
+                continue;
+            }
+            while let Some(item) = ring.next() {
+                let bytes: &[u8] = &item;
+                if bytes.len() < std::mem::size_of::<agentpcap_collector::PipeSample>() {
+                    continue;
+                }
+                let s: &agentpcap_collector::PipeSample =
+                    unsafe { &*(bytes.as_ptr() as *const _) };
+                seq += 1;
+        let machine_pid = s.pid as i64 - offset;
             if machine_pid <= 0 {
                 continue;
             }
@@ -1054,6 +1055,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                      }
                 }
             }
+        }
         }
     // the window ends: every still-pending request lands with the
     // no-response evidence — capture loss degrades the ledger, it never
