@@ -51,6 +51,87 @@ pub const PAYLOAD_BYTES_CAP: usize = 256;
 /// of the resolution. The caller drops stale entries.
 pub type ParentCache = std::collections::HashMap<u32, (u32, std::time::Instant)>;
 
+/// The comm-face cache: a writer's /proc/<pid>/comm read rides once per
+/// pid (the per-sample faces read it again on every sample otherwise,
+/// issue #88). The value carries an `Option<String>`: a `None` entry
+/// caches a failed read (the writer exited) so the retry never burns a
+/// syscall per sample.
+pub type CommCache = std::collections::HashMap<u32, (Option<String>, std::time::Instant)>;
+
+/// The channel-face cache: the writer's fd face (the pipe inode or a
+/// failed lookup) rides once per (pid, fd) pair — the per-sample
+/// readlink retries burn the tap's CPU otherwise. The empty string
+/// marks a failed lookup and keeps the unresolved face honest.
+pub type ChannelCache = std::collections::HashMap<(u32, u32), (String, std::time::Instant)>;
+
+/// The cached comm face with the TTL face: `None` = a failed read rides
+/// the unknown writer.
+pub fn cached_comm(
+    pid: u32,
+    cache: &mut CommCache,
+    ttl: Duration,
+) -> Option<String> {
+    if let Some((cached, at)) = cache.get(&pid) {
+        if at.elapsed() <= ttl {
+            return cached.clone();
+        }
+    }
+    let face = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|c| c.trim().to_string());
+    cache.insert(pid, (face.clone(), std::time::Instant::now()));
+    face
+}
+
+/// The cached chan face: the writer's fd channel rides once per (pid,
+/// fd) pair; `Err` marks the failed lookup (the writer exited or the fd
+/// named a file) so the retry never burns a syscall per sample.
+/// The unit error rides the unresolved face: the cache answers
+/// `Err(())` for a failed lookup, `Ok(channel)` for the pipe pair key.
+#[allow(clippy::result_unit_err)]
+pub fn cached_pipe_channel(
+    pid: u32,
+    fd: u32,
+    cache: &mut ChannelCache,
+    ttl: Duration,
+) -> Result<String, ()> {
+    if let Some((cached, at)) = cache.get(&(pid, fd)) {
+        if at.elapsed() <= ttl {
+            return if cached.is_empty() { Err(()) } else { Ok(cached.clone()) };
+        }
+    }
+    // the fd face resolution: a pipe[:<inode>] names the channel; a
+    // resolvable fd naming anything else is live non-pipe traffic
+    // (the unresolved face, cached); a failed lookup rides the
+    // fd-unresolved face after the retry sleeps
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_micros(300));
+        }
+        let link = match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let inode = link
+            .to_string_lossy()
+            .strip_prefix("pipe:[")
+            .and_then(|rest| rest.trim_end_matches(']').parse::<u32>().ok());
+        match inode {
+            Some(i) => {
+                let face = format!("pipe-pair:{i}");
+                cache.insert((pid, fd), (face.clone(), std::time::Instant::now()));
+                return Ok(face);
+            }
+            None => {
+                cache.insert((pid, fd), (String::new(), std::time::Instant::now()));
+                return Err(());
+            }
+        }
+    }
+    cache.insert((pid, fd), (String::new(), std::time::Instant::now()));
+    Err(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParentCacheEntry {
     pub pid: u32,

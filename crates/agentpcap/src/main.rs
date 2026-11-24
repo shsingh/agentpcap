@@ -594,6 +594,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     let mut reassembler = Reassembler::new(host.clone(), mode.clone(), "tap".into());
     let mut seq: u64 = 0;
     let mut idle_turns: u32 = 0;
+    let mut comm_cache: agentpcap_collector::CommCache =
+        std::collections::HashMap::new();
+    let mut chan_cache: agentpcap_collector::ChannelCache =
+        std::collections::HashMap::new();
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
 
@@ -725,10 +729,13 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             // is udp, a TCP one tcp — the tap never guesses the class
             let (transport, resolved): (&'static str, Option<ResolvedPeer>) =
                 if class == "pipe" {
-                    let fd_path = format!("/proc/{machine_pid}/fd/{}", s.fd);
                     (
                         agentpcap_collector::TRANSPORT_PIPE,
-                        pipe_fd_channel(&fd_path, machine_pid, s.fd)
+                        agentpcap_collector::cached_pipe_channel(
+                            machine_pid, s.fd, &mut chan_cache,
+                            Duration::from_secs(2),
+                        )
+                            .ok()
                             .map(|channel| ResolvedPeer::Pipe { channel }),
                     )
                 } else if class == "tls" {
@@ -762,10 +769,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 // by the canonical five-tuple either way (ADR-0005)
                 0
             };
-            let process =
-                std::fs::read_to_string(format!("/proc/{machine_pid}/comm"))
-                    .map(|c| c.trim().to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
+            let process = agentpcap_collector::cached_comm(
+                machine_pid,
+                &mut comm_cache,
+                Duration::from_secs(2),
+            )
+                .unwrap_or_else(|| "unknown".to_string());
             let lossy = String::from_utf8_lossy(payload_bytes).to_string();
             let mut evidence = vec![class.to_string()];
             if class == "tls" {
@@ -976,7 +985,10 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                             if let Err(e) =
                                 writer.append(&serde_json::to_value(&ev).unwrap())
                             {
-                                if matches!(e, agentpcap_ledger::LedgerError::Duplicate(_)) {
+                                if matches!(
+                                    e,
+                                    agentpcap_ledger::LedgerError::Duplicate(_)
+                                ) {
                                     eprintln!("agentpcap tap: the dedupe skipped the event: its session event already rides the ledger");
                                     continue;
                                 }
@@ -1042,34 +1054,6 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     ExitCode::SUCCESS
 }
 
-/// The pipe channel face (ADR-0004): a resolvable fd naming
-/// `pipe:[<inode>]` names the channel; a resolvable fd naming anything
-/// else is live non-pipe traffic and never records; a failed lookup
-/// (the writer died inside the pop window) keys the record honestly
-/// unresolved with its evidence.
-fn pipe_fd_channel(fd_path: &str, machine_pid: u32, fd: u32) -> Option<String> {
-    (0..5)
-        .find_map(|attempt| {
-            if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            std::fs::read_link(fd_path).ok()
-        })
-        .map(|l| {
-            let text = l.to_string_lossy().to_string();
-            match text
-                .strip_suffix(']')
-                .and_then(|rest| rest.strip_prefix("pipe:["))
-            {
-                Some(inode) => format!("pipe:{inode}"),
-                _ => {
-                    eprintln!("agentpcap tap: skip: pid={machine_pid} fd={fd} link={text}");
-                    String::from("skipped")
-                }
-            }
-        })
-        .filter(|p| p != "skipped")
-}
 
 /// A fresh hex token for the calibration sentinel (host entropy pool).
 /// /dev/urandom never ends, so the request is a bounded exact read.
