@@ -2,8 +2,9 @@
 // failed-lookup face and the channel face ride caches that cut the
 // per-sample /proc burn. The behaviors: cache hits, expiry, the failed
 // lookups, and the descriptor-reuse face (the fd face re-reads per
-// sample — a replaced pipe never answers a stale channel). The test
-// faces ride REAL /proc fds (the test's own fs), no tap internals.
+// sample — a replaced pipe never answers a stale channel). The stdin
+// fd face never rides (it may be a terminal or /dev/null under the
+// harness): the pipe face rides a pipe the test OWNS.
 // Spec: docs/spec.md#13-evaluation-hooks.
 
 use agentpcap_collector::{
@@ -39,34 +40,39 @@ fn p004_the_per_sample_caches_answer_each_behavior() {
         "the expired entry still rides the map for the next fill"
     );
 
-    // the channel face: the test's own stdin pipe resolves as pipe:N
+    // the channel face: a pipe the test OWNS resolves as pipe:N — the
+    // test never assumes the stdin fd rides a pipe (the stdin face may
+    // ride a terminal or /dev/null under the harness)
     let mut chan: ChannelRetryCache = std::collections::HashMap::new();
+    let mut pipe_fds = [0 as libc::c_int; 2];
+    unsafe {
+        assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0, "the test pipe faces open");
+    }
+    let read_fd = pipe_fds[0] as u32;
+    let face = cached_pipe_channel(me, read_fd, &mut chan, std::time::Duration::from_secs(5));
     assert!(
-        std::path::Path::new("/proc/self/fd/0").exists(),
-        "the test's own stdin fd face exists"
+        face.as_deref().unwrap_or_default().starts_with("pipe:"),
+        "the test's own pipe face reads pipe:N: {face:?}"
     );
-    let _ = cached_pipe_channel(
-        me,
-        0,
-        &mut chan,
-        std::time::Duration::from_secs(5),
-    );
+    unsafe {
+        libc::close(pipe_fds[0]);
+        libc::close(pipe_fds[1]);
+    }
 
     // the failed-lookup face: a dead writer's fd rides None twice with
     // one face each (the retry never re-burns)
-    let miss1 = cached_pipe_channel(
-        dead, 3, &mut chan, std::time::Duration::from_secs(5),
+    let miss1 = cached_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
+    let miss2 = cached_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
+    assert!(
+        miss1.is_none() && miss2.is_none(),
+        "the dead writer's fd face is None twice"
     );
-    let miss2 = cached_pipe_channel(
-        dead, 3, &mut chan, std::time::Duration::from_secs(5),
-    );
-    assert!(miss1.is_none() && miss2.is_none(), "the dead writer's fd face is None twice");
 
     // the reuse face: a SUCCESSED (pid, fd) never caches — the next
     // readlink answers the fd's own face, a replaced pipe never
     // answers a stale channel
     assert!(
-        !chan.contains_key(&(me, 0)),
+        !chan.contains_key(&(me, read_fd)),
         "a face that resolves never rides the failed cache"
     );
 }
