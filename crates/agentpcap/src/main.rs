@@ -596,7 +596,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     let mut idle_turns: u32 = 0;
     let mut comm_cache: agentpcap_collector::CommCache =
         std::collections::HashMap::new();
-    let mut chan_cache: agentpcap_collector::ChannelCache =
+    let mut chan_cache: agentpcap_collector::ChannelRetryCache =
         std::collections::HashMap::new();
     let start = Instant::now();
     let expired = || !unbounded && Instant::now() >= start + Duration::from_secs(duration_secs);
@@ -613,6 +613,16 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         // pid no longer reads through /proc, and the map never exhausts
         if last_sweep.elapsed() >= sweep_every {
             last_sweep = Instant::now();
+            agentpcap_collector::shrink_if_over(
+                &mut comm_cache, agentpcap_collector::CACHE_CAP,
+                Duration::from_secs(2),
+                |v: &(Option<String>, std::time::Instant)| v.1,
+            );
+            agentpcap_collector::shrink_if_over(
+                &mut chan_cache, agentpcap_collector::CACHE_CAP,
+                Duration::from_secs(2),
+                |at: &std::time::Instant| *at,
+            );
             if let Ok(keys) = tls_pending
                 .keys()
                 .collect::<Result<Vec<u64>, aya::maps::MapError>>()
@@ -735,7 +745,6 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                             machine_pid, s.fd, &mut chan_cache,
                             Duration::from_secs(2),
                         )
-                            .ok()
                             .map(|channel| ResolvedPeer::Pipe { channel }),
                     )
                 } else if class == "tls" {
