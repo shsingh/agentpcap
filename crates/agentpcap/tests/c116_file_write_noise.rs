@@ -15,7 +15,6 @@ fn bin() -> Command {
 }
 
 #[test]
-#[ignore = "held until issue #85: the c116 cell stays red on the file-write noise face"]
 fn c116_the_file_write_leaves_no_record() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");

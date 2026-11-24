@@ -89,7 +89,8 @@ pub fn cached_comm(
 /// face readlinks per sample (a ~2 us syscall), so a long-lived writer
 /// that replaces its pipe, or a descriptor that a new writer reuses,
 /// always answers its own face.
-pub type ChannelRetryCache = std::collections::HashMap<(u32, u32), std::time::Instant>;
+pub type ChannelRetryCache =
+    std::collections::HashMap<(u32, u32), (ChanKind, std::time::Instant)>;
 
 /// The channel face: `Some(format!("pipe:{inode}"))` names the channel
 /// the reassembler matches, `None` = the fd named a non-pipe file (the
@@ -97,15 +98,67 @@ pub type ChannelRetryCache = std::collections::HashMap<(u32, u32), std::time::In
 /// writer's /proc entry is gone (the fd-unresolved face). The failed
 /// lookups cache per (pid, fd) for `failed_ttl`.
 #[allow(clippy::result_unit_err)]
-pub fn cached_pipe_channel(
+/// The cached channel-resolve kind: the skipped and the failed faces
+/// ride their own value in the retry cache (a cached skip never answers
+/// Failed — that made every non-pipe writer's second sample ride a row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChanKind {
+    Skipped,
+    Failed,
+}
+
+/// The channel resolve faces for a class-pipe sample (the C116 family
+/// and the ADR-0004 race): the three outcomes ride distinctly so the
+/// tap can drop a resolvable non-pipe fd BEFORE the parse face and
+/// still key a died writer's record as unresolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChanResolve {
+    /// The fd names a pipe; the channel face rides.
+    Pipe(String),
+    /// The fd resolves but names no pipe (a file, a terminal): the
+    /// no-record face — the sample never keys a row (spec section 5).
+    Skipped,
+    /// The lookup failed (the writer's /proc entry is gone): the
+    /// record lands with the fd-unresolved-at-pop evidence (ADR-0004).
+    Failed,
+}
+
+/// The channel face resolver: `ChanResolve::Pipe("pipe:N")` names the
+/// channel the reassembler matches. The failed and the skipped lookups
+/// cache per (pid, fd) for `failed_ttl`, so a dead or non-pipe writer's
+/// samples never re-burn the retry sleeps per sample (issue #88).
+/// SUCCESSES never cache: the fd face readlinks per sample (a ~2 us
+/// syscall), so a long-lived writer that replaces its pipe, or a
+/// descriptor that a new writer reuses, always answers its own face.
+pub fn resolved_pipe_channel(
     pid: u32,
     fd: u32,
     failed: &mut ChannelRetryCache,
     failed_ttl: Duration,
-) -> Option<String> {
-    if let Some(at) = failed.get(&(pid, fd)) {
+) -> ChanResolve {
+    resolved_pipe_channel_dbg(pid, fd, pid, failed, failed_ttl)
+}
+
+/// The same face carrying the WIRE's raw pid for the debug receipt: the
+/// tap's pid-space offset can split raw − machine, and the readlink
+/// faces answer whichever pid actually exists in /proc.
+pub fn resolved_pipe_channel_dbg(
+    pid: u32,
+    fd: u32,
+    raw_pid: u32,
+    failed: &mut ChannelRetryCache,
+    failed_ttl: Duration,
+) -> ChanResolve {
+    if let Some((kind, at)) = failed.get(&(pid, fd)) {
         if at.elapsed() <= failed_ttl {
-            return None;
+            // the cached face rides its OWN kind: a skipped non-pipe fd
+            // stays Skipped (the no-record face), a failed lookup stays
+            // Failed (the ADR-0004 unresolved record). One kind for both
+            // made every cached skip ride as a row (the C116 noise face).
+            return match kind {
+                ChanKind::Skipped => ChanResolve::Skipped,
+                ChanKind::Failed => ChanResolve::Failed,
+            };
         }
     }
     for attempt in 0..5 {
@@ -121,17 +174,16 @@ pub fn cached_pipe_channel(
             .strip_suffix(']')
             .and_then(|rest| rest.strip_prefix("pipe:["))
         {
-            Some(inode) => Some(format!("pipe:{inode}")),
+            Some(inode) => ChanResolve::Pipe(format!("pipe:{inode}")),
+            // a resolvable fd naming anything else is live
+            // non-pipe traffic: the skipped face
             _ => {
-                // a resolvable fd naming anything else is live
-                // non-pipe traffic: the skipped face
-                failed.insert((pid, fd), std::time::Instant::now());
-                None
+                failed.insert((pid, fd), (ChanKind::Skipped, std::time::Instant::now()));
+                ChanResolve::Skipped
             }
         };
     }
-    failed.insert((pid, fd), std::time::Instant::now());
-    None
+    failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));    ChanResolve::Failed
 }
 
 /// The bound faces (spec section 11's constant-memory face): when a

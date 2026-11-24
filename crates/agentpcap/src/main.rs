@@ -641,7 +641,7 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             agentpcap_collector::shrink_if_over(
                 &mut chan_cache, agentpcap_collector::CACHE_CAP,
                 Duration::from_secs(2),
-                |at: &std::time::Instant| *at,
+                |v: &(agentpcap_collector::ChanKind, std::time::Instant)| v.1,
             );
             if let Ok(keys) = tls_pending
                 .keys()
@@ -743,6 +743,35 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             let machine_pid = machine_pid as u32;
             let payload_bytes =
                 &s.first_bytes[..(s.len as usize).min(agentpcap_collector::PAYLOAD_BYTES_CAP)];
+            // The pipe fd face rides BEFORE the parse face (issue #88 +
+            // the C116 family): a sink that re-writes the same agent
+            // bytes to /dev/null or a file rides as a whole second
+            // sample per frame otherwise — the skip face costs one
+            // cached readlink, never the classify face. Only the pipe
+            // class hoists: the socket and TLS faces resolve through
+            // /proc/net and uprobes with the same cost shape as the
+            // parse.
+            let mut pipe_channel: Option<String> = None;
+            if class == "pipe" {
+                match agentpcap_collector::resolved_pipe_channel_dbg(
+                    machine_pid, s.fd, s.pid, &mut chan_cache,
+                    Duration::from_secs(2),
+                ) {
+                    agentpcap_collector::ChanResolve::Skipped => {
+                        // a resolvable fd naming no pipe: live traffic
+                        // to a file or terminal — the no-record face
+                        // (the C116 family), never a row
+                        continue;
+                    }
+                    agentpcap_collector::ChanResolve::Failed => {
+                        // the writer's /proc entry is gone; the record
+                        // lands keyed honestly unresolved (ADR-0004)
+                    }
+                    agentpcap_collector::ChanResolve::Pipe(channel) => {
+                        pipe_channel = Some(channel);
+                    }
+                }
+            }
             if classify_pipe_sample(s.pid, s.ppid, "", payload_bytes) == Decision::Other {
                 continue;
             }
@@ -762,12 +791,11 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             // is udp, a TCP one tcp — the tap never guesses the class
             let (transport, resolved): (&'static str, Option<ResolvedPeer>) =
                 if class == "pipe" {
+                    // the hoisted face: the channel resolved before the
+                    // parse; the failed face rides unresolved
                     (
                         agentpcap_collector::TRANSPORT_PIPE,
-                        agentpcap_collector::cached_pipe_channel(
-                            machine_pid, s.fd, &mut chan_cache,
-                            Duration::from_secs(2),
-                        )
+                        pipe_channel
                             .map(|channel| ResolvedPeer::Pipe { channel }),
                     )
                 } else if class == "tls" {
