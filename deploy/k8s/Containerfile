@@ -4,7 +4,7 @@
 # release binary links dynamically; a static (musl) release build is
 # the post-gate lane. The capability set is documented in
 # deploy/README.md.
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 # the maintainer copies the attested release binary at build time
 COPY --chown=65534:65534 agentpcap /usr/local/bin/agentpcap
 USER 65534
