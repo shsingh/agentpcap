@@ -25,10 +25,13 @@ pub struct PipeSample {
     ppid: u32,
     len: u32,
     fd: u32,
+    /// The writer's comm at the syscall (ADR-0009, issue #95): the
+    /// kernel-side face, never a /proc read at the pop.
+    comm: [u8; 16],
     first_bytes: [u8; 256],
 }
 
-const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 288);
 
 const PAYLOAD_BYTES_CAP: u32 = 256;
 
@@ -279,6 +282,7 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
                 Err(_) => return 0,
             },
             first_bytes: [0u8; 256],
+            comm: aya_ebpf::helpers::bpf_get_current_comm().unwrap_or([0u8; 16]),
         };
         if take > 0 {
             if bpf_probe_read_user_buf(buf as *const u8, &mut sample.first_bytes[..take]).is_err() {
@@ -393,6 +397,7 @@ pub fn agentpcap_send_exit(mut ctx: TracePointContext) -> i64 {
             len: take as u32,
             fd: saved.fd,
             first_bytes: [0u8; 256],
+            comm: aya_ebpf::helpers::bpf_get_current_comm().unwrap_or([0u8; 16]),
         };
         if bpf_probe_read_user_buf(saved.ubuf as *const u8, &mut sample.first_bytes[..take])
             .is_err()
@@ -530,6 +535,7 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
             len: take as u32,
             fd: saved.fd,
             first_bytes: [0u8; 256],
+            comm: aya_ebpf::helpers::bpf_get_current_comm().unwrap_or([0u8; 16]),
         };
         if bpf_probe_read_user_buf(saved.ubuf as *const u8, &mut sample.first_bytes[..take]).is_err()
         {
@@ -716,6 +722,7 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
             len: take as u32,
             fd: 0,
             first_bytes: [0u8; 256],
+            comm: aya_ebpf::helpers::bpf_get_current_comm().unwrap_or([0u8; 16]),
         };
         if bpf_probe_read_user_buf(buf, &mut sample.first_bytes[..take]).is_err() {
             if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_READ_FAIL) {

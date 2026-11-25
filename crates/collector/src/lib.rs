@@ -37,9 +37,13 @@ pub struct PipeSample {
     pub len: u32,
     /// The writer's file descriptor (the write syscall's first argument).
     pub fd: u32,
+    /// The writer's comm at the syscall (ADR-0009, issue #95): the
+    /// kernel-side face, never a /proc read at the pop.
+    pub comm: [u8; 16],
     /// The first payload bytes of the write buffer.
     pub first_bytes: [u8; 256],
 }
+
 
 // SAFETY: the struct is POD (fixed size, no padding-sensitive fields in
 // use) and the wire layout is const-locked; aya reads it by value.
@@ -66,6 +70,17 @@ pub type ChannelCache = std::collections::HashMap<(u32, u32), (String, std::time
 
 /// The cached comm face with the TTL face: `None` = a failed read rides
 /// the unknown writer.
+/// The writer's comm face from the wire sample: trim at the first NUL,
+/// lossy on the tail. The drain prefers this face over the /proc read
+/// (the pop-window race never races the syscall itself).
+pub fn wire_comm(comm: &[u8; 16]) -> String {
+    let end = comm.iter().position(|b| *b == 0).unwrap_or(16);
+    if end == 0 {
+        return String::new();
+    }
+    String::from_utf8_lossy(&comm[..end]).into_owned()
+}
+
 pub fn cached_comm(
     pid: u32,
     cache: &mut CommCache,
@@ -497,7 +512,7 @@ pub fn resolve_parent(pid: u32, cache: &mut ParentCache, ttl: Duration) -> u32 {
     ppid
 }
 
-const _: () = assert!(core::mem::size_of::<PipeSample>() == 272);
+const _: () = assert!(core::mem::size_of::<PipeSample>() == 288);
 
 /// The ring-pop face: one sample rides out COPIED, so the ring borrow
 /// ends at the call (issue #88's ringbuf leaf). An empty ring, or a

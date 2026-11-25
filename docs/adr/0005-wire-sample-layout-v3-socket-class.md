@@ -1,7 +1,9 @@
 # 0005 — Wire sample layout v3: the socket class rides the pipe-class wire, the sample class rides the map
 
 Status: accepted (extends [0004](0004-wire-sample-layout-v2.md); 0004's
-272-byte contract stays in force)
+272-byte contract is superseded by [0009](0009-wire-sample-layout-v4-comm.md),
+which grows the sample to 288 bytes; the class-from-queue face stays in
+force)
 
 ## Context
 
