@@ -479,11 +479,17 @@ impl Reassembler {
                 .get(&id)
                 .map(|v| {
                     v.iter().any(|existing| {
-                        // the same message seen by its two endpoints:
-                        // the DIRECTION faces differ (a send and a
-                        // receive), the bodies match. Two independent
-                        // sends share a direction - they ride.
-                        existing.probe_face.as_deref() != probe_face.as_deref()
+                        // the confirmed copy: OPPOSITE DIRECTIONS on the
+                        // SAME channel, both stamped — a missing stamp
+                        // is never a receive face (the pipe class with
+                        // only its write stamp and a socket request
+                        // without one never merge), and the bucket face
+                        // (not the merge face) absorbs the dead-sink
+                        // echo copy
+                        existing.peer == frame.peer
+                            && existing.probe_face.is_some()
+                            && probe_face.is_some()
+                            && existing.probe_face.as_deref() != probe_face.as_deref()
                             && existing.req == new_payload
                     })
                 })
@@ -1016,10 +1022,25 @@ impl Reassembler {
         // reuse one id within the SAME second key twice, never once
         // (the R120 face; across runs the observation moment carries
         // the separation, the run counter carries this run's)
-        let dedup = format!(
-            "{}:{}:{}:{}@{}.{:012x}",
-            p.transport, peer, event_name, p.id, p.observed_ts, p.seq_at_park
-        );
+        let dedup = if bind_key.is_none() && peer == "unresolved" {
+            // the fd-unresolved loss face (the dead-sink echo class):
+            // the key rides the CONTENT hash inside a ONE-SECOND
+            // observation bucket (the C116b design row) — the echo
+            // copy rides the face the writer's first copy keyed and
+            // the ledger's Duplicate face absorbs it before the row
+            // rides. A REAL same-body call past the bucket rides: a
+            // later capture keys its own bucket, and an id reuse in
+            // the next second keys again — equal content alone never
+            // proves the same call.
+            let content = serde_json::to_vec(&p.req).unwrap_or_default();
+            let bucket = &p.observed_ts[..19.min(p.observed_ts.len())];
+            format!("{}:u:{}:{:016x}@{}", p.transport, event_name, fnv64(&content), bucket)
+        } else {
+            format!(
+                "{}:{}:{}:{}@{}.{:012x}",
+                p.transport, peer, event_name, p.id, p.observed_ts, p.seq_at_park
+            )
+        };
         let payload = match &bind_key {
             Some(_) => Some(serde_json::json!({"request": p.req, "result": result})),
             None => Some(serde_json::json!({"request": p.req, "result": Value::Null})),
