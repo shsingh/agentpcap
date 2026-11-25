@@ -933,6 +933,11 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             }
             if class == "pipe" {
                 evidence[0] = "stdio-pipe".into();
+                // the direction face: the pipe ring carries the write
+                // faces only (the write tracepoint rides ppid 0; the
+                // receive faces push the socket ring), so the pipe
+                // class stamps send.
+                evidence.push("probe-face:send".into());
             };
             if class == "tls" {
                 evidence[0] = "tls-boundary".into();
