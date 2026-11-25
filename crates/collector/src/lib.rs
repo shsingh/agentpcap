@@ -176,13 +176,19 @@ pub fn resolved_pipe_channel(
         // unique across filesystems and collides with pipe inodes —
         // unrelated channels would share a key. `fd/{fd}` readlink
         // answers `pipe:[N]` for anonymous pipes and a PATH for named
-        // FIFOs; only the anonymous face becomes a channel.
-        return match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
+        // FIFOs; only the anonymous face becomes a channel. A readlink
+        // failure here is the writer-exit race between the fstat and
+        // the readlink — the ADR-0004 face, never a silent drop.
+        match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
             Ok(link) if link.to_string_lossy().starts_with("pipe:[") => {
-                ChanResolve::Pipe(format!("pipe:{}", st.st_ino))
+                return ChanResolve::Pipe(format!("pipe:{}", st.st_ino));
             }
-            _ => ChanResolve::Skipped,
-        };
+            Ok(_) => {}
+            Err(_) => {
+                failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+                return ChanResolve::Failed;
+            }
+        }
     }
     // a resolvable fd naming no pipe (a file, a terminal): the
     // no-record face — never cached: the same descriptor may ride a
