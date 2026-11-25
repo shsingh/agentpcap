@@ -904,12 +904,24 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 // by the canonical five-tuple either way (ADR-0005)
                 0
             };
-            let process = agentpcap_collector::cached_comm(
-                machine_pid,
-                &mut comm_cache,
-                Duration::from_secs(2),
-            )
-                .unwrap_or_else(|| "unknown".to_string());
+            let process = {
+                // the wire comm rides the syscall face (ADR-0009, issue
+                // #95): the /proc read at the pop never races the
+                // writer's own task comm. The /proc face stays the
+                // fallback for an empty wire face (a truncated or
+                // failed comm fill).
+                let wire = agentpcap_collector::wire_comm(&s.comm);
+                if wire.is_empty() {
+                    agentpcap_collector::cached_comm(
+                        machine_pid,
+                        &mut comm_cache,
+                        Duration::from_secs(2),
+                    )
+                    .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    wire
+                }
+            };
             let lossy = String::from_utf8_lossy(payload_bytes).to_string();
             let mut evidence = vec![class.to_string()];
             if class == "tls" {
