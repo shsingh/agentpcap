@@ -308,6 +308,53 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             }
         };
 
+    // The pid-namespace face (issue #106): the probe keys each sample
+    // with the pid the writer's own namespace /proc reports. The tap
+    // publishes its pid-ns identity (new_encode_dev(dev), ino) so the
+    // same-namespace writers translate wire-true and the userspace
+    // faces (readlink, pidfd_open) read under one pid space. The
+    // helper's ns_match compares against the writer's own pid
+    // namespace (kernel/bpf/helpers.c): the dev/ino must name the pid
+    // ns, never another ns-class face. Writers outside this pid ns
+    // ride the raw tgid — the faces unchanged.
+    let mut ns_armed = false;
+    {
+        let pidns_path = "/proc/self/ns/pid";
+        let st = match std::fs::metadata(pidns_path) {
+            Ok(m) => std::os::unix::fs::MetadataExt::dev(&m),
+            Err(_) => 0,
+        };
+        let ino = match std::fs::metadata(pidns_path) {
+            Ok(m) => std::os::unix::fs::MetadataExt::ino(&m),
+            Err(_) => 0,
+        };
+        // new_encode_dev: the kernel's dev_t packing (major<<8 | minor)
+        let major = ((st >> 8) & 0xfffu64) | ((st >> 32) & !0xfffu64);
+        let minor = (st & 0xffu64) | ((st >> 12) & !0xffu64);
+        let encoded = ((major & 0xfff) << 8)
+            | (minor & 0xff)
+            | ((major & !0xfff) << 32)
+            | ((minor & !0xff) << 12);
+        if let Some(nsmap) = bpf.map_mut("ns_config") {
+            let mut cfg: aya::maps::Array<_, u64> = match nsmap.try_into() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("agentpcap tap: the ns_config map failed: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(e) = cfg.set(0, encoded, 0) {
+                eprintln!("agentpcap tap: the ns_config dev write failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(e) = cfg.set(1, ino, 0) {
+                eprintln!("agentpcap tap: the ns_config ino write failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            ns_armed = true;
+        }
+    }
+
     // The cgroup filter face (ADR-0005): the marker key turns the
     // probe's allow filter on; the lab default captures all. The face
     // installs BEFORE the socket probes attach — a gap would let
@@ -587,6 +634,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         eprintln!("agentpcap tap: the calibration sample never arrived");
         return ExitCode::FAILURE;
     };
+    // The ns face armed (issue #106): the probe emits the /proc-true
+    // pid already, so the machine-path translation rides zero offset;
+    // the calibration face keeps its sentinel window only. The
+    // per-process offset face never held across writers — the ns face
+    // replaces it.
+    let offset = if ns_armed { 0 } else { offset };
 
 
     let mut writer = match LedgerWriter::create(&ledger_path) {
@@ -648,13 +701,35 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
                 .collect::<Result<Vec<u64>, aya::maps::MapError>>()
             {
                 for k in keys {
-                    // the pid translates first: the eBPF key's pid rides
-                    // the kernel-space view, /proc answers the tap's
-                    // view — the machine face (the calibration offset)
-                    // names the reader
-                    let proc_pid = ((k >> 32) as i64 - offset) as u32;
-                    if proc_pid == 0
-                        || !std::path::Path::new(&format!("/proc/{proc_pid}")).exists()
+                    // the pid comes from the parked value itself: the
+                    // park face stores the writer's namespace-visible
+                    // pid (the ns face, issue #106) — /proc answers
+                    // the tap's view directly, no translation rides
+                    // the kernel-space key
+                    //
+                    // the removal needs a STABLE value: two agreeing
+                    // reads. A torn read (the sweep racing the park's
+                    // write) rides a half-written slot — a mismatch
+                    // or a zero pid skips the removal and the next
+                    // tick re-reads the settled value. A live parked
+                    // entry keeps a live pid, so the /proc check
+                    // passes and the call survives the sweep.
+                    let v1 = match tls_pending.get(&k, 0) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let v2 = match tls_pending.get(&k, 0) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if v1.ns_pid != v2.ns_pid
+                        || v1.ubuf != v2.ubuf
+                        || v1.wptr != v2.wptr
+                        || v1.ns_pid == 0
+                    {
+                        continue;
+                    }
+                    if !std::path::Path::new(&format!("/proc/{}", v1.ns_pid)).exists()
                     {
                         let _ = tls_pending.remove(&k);
                     }
@@ -1140,10 +1215,14 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
 struct SavedTlsWire {
     ubuf: u64,
     wptr: u64,
+    // The park face stores the writer's namespace-visible pid (the ns
+    // face, issue #106): the bounded-cleanup sweep checks /proc by it
+    // directly — the key's pid half never translates in userspace.
+    ns_pid: u32,
 }
 
-const _: () = assert!(core::mem::size_of::<SavedTlsWire>() == 16);
-// zeroable + any-bit-pattern: the sweep face reads the keys only
+const _: () = assert!(core::mem::size_of::<SavedTlsWire>() == 24);
+// zeroable + any-bit-pattern: the sweep face reads its values' ns pid
 unsafe impl aya::Pod for SavedTlsWire {}
 
 /// The chunked decode face rides BYTES: `SIZE\r\n chunk \r\n
