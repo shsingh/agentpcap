@@ -124,46 +124,39 @@ pub enum ChanResolve {
 }
 
 /// The channel face resolver: `ChanResolve::Pipe("pipe:N")` names the
-/// channel the reassembler matches. The failed and the skipped lookups
-/// cache per (pid, fd) for `failed_ttl`, so a dead or non-pipe writer's
-/// samples never re-burn the retry sleeps per sample (issue #88).
-/// SUCCESSES never cache: the fd face readlinks per sample (a ~2 us
-/// syscall), so a long-lived writer that replaces its pipe, or a
-/// descriptor that a new writer reuses, always answers its own face.
+/// channel the reassembler matches. A FAILED lookup caches per (pid, fd)
+/// for `failed_ttl` — a dead writer's samples never re-burn the resolve
+/// (issue #88). Every other face re-reads: a Skipped sample's descriptor
+/// may ride a pipe for a later writer, and a pipe's inode changes when
+/// a writer replaces its pipe.
 pub fn resolved_pipe_channel(
     pid: u32,
     fd: u32,
     failed: &mut ChannelRetryCache,
     failed_ttl: Duration,
 ) -> ChanResolve {
-    // the cache face: the kind rides its OWN value
+    // the cache face carries ONLY the failed lookups (a dead writer's
+    // face): a cached Skipped face would hide a genuine write whenever
+    // the same process replaces its descriptor with a pipe inside the
+    // ttl — every successful face re-reads its own kind
     if let Some((kind, at)) = failed.get(&(pid, fd)) {
-        if at.elapsed() <= failed_ttl {
-            return match kind {
-                ChanKind::Skipped => ChanResolve::Skipped,
-                ChanKind::Failed => ChanResolve::Failed,
-            };
+        if at.elapsed() <= failed_ttl && *kind == ChanKind::Failed {
+            return ChanResolve::Failed;
         }
     }
-    // THE PIDFD FACE (issue #85): `/proc/{pid}/fd/{fd}` readlink answers
-    // rc 1, silently, for regular-FILE fds on this host (the OrbStack
-    // translation face — pipes and /dev/null resolve fine). The wire-true
-    // face: duplicate the fd into this process with pidfd_getfd and fstat
-    // it — `st_ino` carries the pipe's real inode and `S_ISFIFO` carries
-    // the kind, so `pipe:{inode}` rides the actual face.
+    // THE PIDFD FACE (issue #85): some /proc translators answer rc 1,
+    // silently, for regular-FILE fds, which misreads the kind as 'the
+    // writer died'. The wire-true face: duplicate the fd into this
+    // process with pidfd_getfd and fstat it — `st_ino` carries the
+    // pipe's real inode and the S_IFIFO kind carries the face, so
+    // `pipe:{inode}` rides the actual face.
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0) };
-    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
-        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} pidfd_open={pidfd}");
-    }
     if pidfd < 0 {
         // the writer's /proc entry is gone: the ADR-0004 unresolved face
         failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
         return ChanResolve::Failed;
     }
     let dup = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd, fd as libc::c_long, 0) };
-    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
-        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} pidfd_getfd={dup}");
-    }
     if dup < 0 {
         // the fd closed between the pop and the resolve: the same race
         failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
@@ -178,17 +171,23 @@ pub fn resolved_pipe_channel(
         failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
         return ChanResolve::Failed;
     }
-    if std::env::var("AGENTPCAP_RESOLVE_DEBUG").is_ok() {
-        eprintln!("RESOLVE-DEBUG pid={pid} fd={fd} fstat_mode={:#x} ino={}", st.st_mode, st.st_ino);
-    }
     if (st.st_mode & libc::S_IFMT) == libc::S_IFIFO {
-        ChanResolve::Pipe(format!("pipe:{}", st.st_ino))
-    } else {
-        // a resolvable fd naming no pipe (a file, a terminal): the
-        // no-record face
-        failed.insert((pid, fd), (ChanKind::Skipped, std::time::Instant::now()));
-        ChanResolve::Skipped
+        // S_IFIFO matches NAMED FIFOs too: a filesystem inode is not
+        // unique across filesystems and collides with pipe inodes —
+        // unrelated channels would share a key. `fd/{fd}` readlink
+        // answers `pipe:[N]` for anonymous pipes and a PATH for named
+        // FIFOs; only the anonymous face becomes a channel.
+        return match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
+            Ok(link) if link.to_string_lossy().starts_with("pipe:[") => {
+                ChanResolve::Pipe(format!("pipe:{}", st.st_ino))
+            }
+            _ => ChanResolve::Skipped,
+        };
     }
+    // a resolvable fd naming no pipe (a file, a terminal): the
+    // no-record face — never cached: the same descriptor may ride a
+    // pipe for a later writer (the descriptor-reuse face)
+    ChanResolve::Skipped
 }
 
 /// The bound faces (spec section 11's constant-memory face): when a
