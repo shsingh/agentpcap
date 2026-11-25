@@ -79,6 +79,44 @@ static mut CGROUP_ALLOW: HashMap<u64, u32> = HashMap::with_max_entries(1024, 0);
 #[map(name = "cgroup_seen")]
 static mut CGROUP_SEEN: Array<u64> = Array::with_max_entries(1, 0);
 
+// The raw binding face: fn id 120 (the kernel's bpf_get_ns_current_pid_tgid);
+// aya-ebpf 0.3.0 has no generated wrapper for it, so call through its
+// own helper table via the crate's binding module.
+#[repr(C)]
+pub struct BpfPidnsInfo {
+    pub pid: u32,
+    pub tgid: u32,
+}
+
+unsafe fn ns_current_pid_tgid(dev: u64, ino: u64, nsdata: *mut BpfPidnsInfo) -> i64 {
+    type Fun = unsafe extern "C" fn(u64, u64, *mut BpfPidnsInfo, u32) -> i64;
+    let fun: Fun = core::mem::transmute(120usize);
+    fun(dev, ino, nsdata, core::mem::size_of::<BpfPidnsInfo>() as u32)
+}
+
+// The pid-namespace face (issue #106): the tap writes its own pid-ns
+// identity (new_encode_dev(dev), ino) at boot; the helper's ns_match
+// compares against the writer's own pid namespace (kernel/bpf/helpers.c),
+// so same-namespace writers translate /proc-true and the userspace
+// faces (readlink, pidfd_open) read under one pid space. Writers
+// outside this pid ns ride the raw tgid — the faces unchanged.
+#[map(name = "ns_config")]
+static mut NS_CONFIG: Array<u64> = Array::with_max_entries(2, 0);
+
+/// The namespace-visible tgid face, read through the pid-ns identity the
+/// tap publishes at boot. The helper gates on the writer's own pid
+/// namespace, so writers outside it ride the raw tgid unchanged.
+fn ns_tgid() -> u32 {
+    let dev = unsafe { match NS_CONFIG.get(0) { Some(v) => *v, None => 0 } };
+    let ino = unsafe { match NS_CONFIG.get(1) { Some(v) => *v, None => 0 } };
+    if dev == 0 || ino == 0 {
+        return unsafe { (bpf_get_current_pid_tgid() >> 32) as u32 };
+    }
+    let mut info = BpfPidnsInfo { pid: 0, tgid: 0 };
+    let rc = unsafe { ns_current_pid_tgid(dev, ino, &mut info as *mut BpfPidnsInfo) };
+    if rc == 0 { info.tgid } else { unsafe { (bpf_get_current_pid_tgid() >> 32) as u32 } }
+}
+
 // The ADR-0003 capture filter, shared by the pipe and the socket taps:
 // the calibration sentinel, or `{` plus the `jsonrpc` member within the
 // first 40 bytes with the leading whitespace skipped.
@@ -233,7 +271,7 @@ pub fn agentpcap(mut ctx: TracePointContext) -> i64 {
 
     unsafe {
         let mut sample = PipeSample {
-            pid: (bpf_get_current_pid_tgid() >> 32) as u32,
+            pid: ns_tgid(),
             ppid: 0,
             len: take as u32,
             fd: match ctx.read_at::<u32>(16) {
@@ -350,7 +388,7 @@ pub fn agentpcap_send_exit(mut ctx: TracePointContext) -> i64 {
             return 0;
         }
         let mut sample = PipeSample {
-            pid: (key >> 32) as u32,
+            pid: ns_tgid(),
             ppid: 0,
             len: take as u32,
             fd: saved.fd,
@@ -487,7 +525,7 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
             return 0;
         }
         let mut sample = PipeSample {
-            pid: (key >> 32) as u32,
+            pid: ns_tgid(),
             ppid: 1, // the receive direction face (the send faces ride 0)
             len: take as u32,
             fd: saved.fd,
@@ -542,9 +580,13 @@ const SLOT_PENDING_LOSS: u32 = 5;
 pub struct SavedTls {
     ubuf: u64,
     wptr: u64,
+    // The writer's namespace-visible pid (the ns face, issue #106):
+    // the userspace bounded-cleanup sweep reads it — the key's pid
+    // half stays kernel-space (the raw tgid) and never translates.
+    ns_pid: u32,
 }
 
-const _: () = assert!(core::mem::size_of::<SavedTls>() == 16);
+const _: () = assert!(core::mem::size_of::<SavedTls>() == 24);
 
 #[map(name = "tls_pending")]
 static mut TLS_PENDING: HashMap<u64, SavedTls> = HashMap::with_max_entries(8192, 0);
@@ -612,6 +654,7 @@ fn tls_park(ctx: &mut ProbeContext) -> i64 {
         let saved = SavedTls {
             ubuf: ubuf as u64,
             wptr: wptr as u64,
+            ns_pid: ns_tgid(),
         };
         if TLS_PENDING.insert(&key, &saved, 0).is_err() {
             if let Some(slot_c) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
@@ -635,6 +678,7 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
         Some(e) => SavedTls {
             ubuf: e.ubuf,
             wptr: e.wptr,
+            ns_pid: e.ns_pid,
         },
         None => return 0,
     };
@@ -667,7 +711,7 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
             return 0;
         }
         let mut sample = PipeSample {
-            pid: (key >> 32) as u32,
+            pid: ns_tgid(),
             ppid: is_read,
             len: take as u32,
             fd: 0,

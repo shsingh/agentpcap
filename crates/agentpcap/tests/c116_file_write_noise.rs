@@ -15,7 +15,6 @@ fn bin() -> Command {
 }
 
 #[test]
-#[ignore = "held until issue #106: the c116 cell rides the pid-namespace calibration face"]
 fn c116_the_file_write_leaves_no_record() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
