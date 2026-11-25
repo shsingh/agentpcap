@@ -8,7 +8,7 @@
 // Spec: docs/spec.md#13-evaluation-hooks.
 
 use agentpcap_collector::{
-    cached_comm, cached_pipe_channel, ChannelRetryCache, CommCache,
+    cached_comm, resolved_pipe_channel, ChannelRetryCache, CommCache,
 };
 
 #[test]
@@ -49,9 +49,9 @@ fn p004_the_per_sample_caches_answer_each_behavior() {
         assert_eq!(libc::pipe(pipe_fds.as_mut_ptr()), 0, "the test pipe faces open");
     }
     let read_fd = pipe_fds[0] as u32;
-    let face = cached_pipe_channel(me, read_fd, &mut chan, std::time::Duration::from_secs(5));
+    let face = resolved_pipe_channel(me, read_fd, &mut chan, std::time::Duration::from_secs(5));
     assert!(
-        face.as_deref().unwrap_or_default().starts_with("pipe:"),
+        matches!(&face, agentpcap_collector::ChanResolve::Pipe(channel) if channel.starts_with("pipe:")),
         "the test's own pipe face reads pipe:N: {face:?}"
     );
     unsafe {
@@ -61,11 +61,12 @@ fn p004_the_per_sample_caches_answer_each_behavior() {
 
     // the failed-lookup face: a dead writer's fd rides None twice with
     // one face each (the retry never re-burns)
-    let miss1 = cached_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
-    let miss2 = cached_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
+    let miss1 = resolved_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
+    let miss2 = resolved_pipe_channel(dead, 3, &mut chan, std::time::Duration::from_secs(5));
     assert!(
-        miss1.is_none() && miss2.is_none(),
-        "the dead writer's fd face is None twice"
+        miss1 == agentpcap_collector::ChanResolve::Failed
+            && miss2 == agentpcap_collector::ChanResolve::Failed,
+        "the dead writer's fd face rides Failed twice"
     );
 
     // the reuse face: a SUCCESSED (pid, fd) never caches — the next

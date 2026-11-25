@@ -89,7 +89,8 @@ pub fn cached_comm(
 /// face readlinks per sample (a ~2 us syscall), so a long-lived writer
 /// that replaces its pipe, or a descriptor that a new writer reuses,
 /// always answers its own face.
-pub type ChannelRetryCache = std::collections::HashMap<(u32, u32), std::time::Instant>;
+pub type ChannelRetryCache =
+    std::collections::HashMap<(u32, u32), (ChanKind, std::time::Instant)>;
 
 /// The channel face: `Some(format!("pipe:{inode}"))` names the channel
 /// the reassembler matches, `None` = the fd named a non-pipe file (the
@@ -97,41 +98,102 @@ pub type ChannelRetryCache = std::collections::HashMap<(u32, u32), std::time::In
 /// writer's /proc entry is gone (the fd-unresolved face). The failed
 /// lookups cache per (pid, fd) for `failed_ttl`.
 #[allow(clippy::result_unit_err)]
-pub fn cached_pipe_channel(
+/// The cached channel-resolve kind: the skipped and the failed faces
+/// ride their own value in the retry cache (a cached skip never answers
+/// Failed — that made every non-pipe writer's second sample ride a row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChanKind {
+    Skipped,
+    Failed,
+}
+
+/// The channel resolve faces for a class-pipe sample (the C116 family
+/// and the ADR-0004 race): the three outcomes ride distinctly so the
+/// tap can drop a resolvable non-pipe fd BEFORE the parse face and
+/// still key a died writer's record as unresolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChanResolve {
+    /// The fd names a pipe; the channel face rides.
+    Pipe(String),
+    /// The fd resolves but names no pipe (a file, a terminal): the
+    /// no-record face — the sample never keys a row (spec section 5).
+    Skipped,
+    /// The lookup failed (the writer's /proc entry is gone): the
+    /// record lands with the fd-unresolved-at-pop evidence (ADR-0004).
+    Failed,
+}
+
+/// The channel face resolver: `ChanResolve::Pipe("pipe:N")` names the
+/// channel the reassembler matches. A FAILED lookup caches per (pid, fd)
+/// for `failed_ttl` — a dead writer's samples never re-burn the resolve
+/// (issue #88). Every other face re-reads: a Skipped sample's descriptor
+/// may ride a pipe for a later writer, and a pipe's inode changes when
+/// a writer replaces its pipe.
+pub fn resolved_pipe_channel(
     pid: u32,
     fd: u32,
     failed: &mut ChannelRetryCache,
     failed_ttl: Duration,
-) -> Option<String> {
-    if let Some(at) = failed.get(&(pid, fd)) {
-        if at.elapsed() <= failed_ttl {
-            return None;
+) -> ChanResolve {
+    // the cache face carries ONLY the failed lookups (a dead writer's
+    // face): a cached Skipped face would hide a genuine write whenever
+    // the same process replaces its descriptor with a pipe inside the
+    // ttl — every successful face re-reads its own kind
+    if let Some((kind, at)) = failed.get(&(pid, fd)) {
+        if at.elapsed() <= failed_ttl && *kind == ChanKind::Failed {
+            return ChanResolve::Failed;
         }
     }
-    for attempt in 0..5 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_micros(300));
-        }
-        let link = match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        let text = link.to_string_lossy().to_string();
-        return match text
-            .strip_suffix(']')
-            .and_then(|rest| rest.strip_prefix("pipe:["))
-        {
-            Some(inode) => Some(format!("pipe:{inode}")),
-            _ => {
-                // a resolvable fd naming anything else is live
-                // non-pipe traffic: the skipped face
-                failed.insert((pid, fd), std::time::Instant::now());
-                None
+    // THE PIDFD FACE (issue #85): some /proc translators answer rc 1,
+    // silently, for regular-FILE fds, which misreads the kind as 'the
+    // writer died'. The wire-true face: duplicate the fd into this
+    // process with pidfd_getfd and fstat it — `st_ino` carries the
+    // pipe's real inode and the S_IFIFO kind carries the face, so
+    // `pipe:{inode}` rides the actual face.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0) };
+    if pidfd < 0 {
+        // the writer's /proc entry is gone: the ADR-0004 unresolved face
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        return ChanResolve::Failed;
+    }
+    let dup = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd, fd as libc::c_long, 0) };
+    if dup < 0 {
+        // the fd closed between the pop and the resolve: the same race
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        unsafe { libc::close(pidfd as i32) };
+        return ChanResolve::Failed;
+    }
+    unsafe { libc::close(pidfd as i32) };
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let st_rc = unsafe { libc::fstat(dup as i32, &mut st) };
+    unsafe { libc::close(dup as i32) };
+    if st_rc != 0 {
+        failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+        return ChanResolve::Failed;
+    }
+    if (st.st_mode & libc::S_IFMT) == libc::S_IFIFO {
+        // S_IFIFO matches NAMED FIFOs too: a filesystem inode is not
+        // unique across filesystems and collides with pipe inodes —
+        // unrelated channels would share a key. `fd/{fd}` readlink
+        // answers `pipe:[N]` for anonymous pipes and a PATH for named
+        // FIFOs; only the anonymous face becomes a channel. A readlink
+        // failure here is the writer-exit race between the fstat and
+        // the readlink — the ADR-0004 face, never a silent drop.
+        match std::fs::read_link(format!("/proc/{pid}/fd/{fd}")) {
+            Ok(link) if link.to_string_lossy().starts_with("pipe:[") => {
+                return ChanResolve::Pipe(format!("pipe:{}", st.st_ino));
             }
-        };
+            Ok(_) => {}
+            Err(_) => {
+                failed.insert((pid, fd), (ChanKind::Failed, std::time::Instant::now()));
+                return ChanResolve::Failed;
+            }
+        }
     }
-    failed.insert((pid, fd), std::time::Instant::now());
-    None
+    // a resolvable fd naming no pipe (a file, a terminal): the
+    // no-record face — never cached: the same descriptor may ride a
+    // pipe for a later writer (the descriptor-reuse face)
+    ChanResolve::Skipped
 }
 
 /// The bound faces (spec section 11's constant-memory face): when a

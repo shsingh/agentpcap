@@ -11,7 +11,7 @@ name = "agentpcap_collector"
 [dependencies]
 serde_json = "1"
 aya = "0.13"
+libc = "0.2"
 
 [dev-dependencies]
-libc = "0.2"
 tempfile = "=3.27.0"

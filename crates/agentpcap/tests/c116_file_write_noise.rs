@@ -15,7 +15,7 @@ fn bin() -> Command {
 }
 
 #[test]
-#[ignore = "held until issue #85: the c116 cell stays red on the file-write noise face"]
+#[ignore = "held until issue #106: the c116 cell rides the pid-namespace calibration face"]
 fn c116_the_file_write_leaves_no_record() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
@@ -41,22 +41,26 @@ fn c116_the_file_write_leaves_no_record() {
     // in its own private dir — no pipe, no socket face. The writer
     // stays ALIVE for the whole window: a live fd resolves at pop (the
     // NotPipe face); a dead writer rides the ADR-0004 race face instead
-    let fx = tempfile::tempdir().expect("the private writer dir creates");
+        let fx = tempfile::tempdir().expect("the private writer dir creates");
     let file = fx.path().join("notes.jsonl");
+    // the writer rides a SCRIPT FILE (never -c quoting): the JSON
+    // body lands CLEAN (a real newline, no brace/escape pasting) so
+    // the classify face sees what a real agent writes — the face under
+    // test is the fd kind, never the payload shape; the bodies ride
+    // rust's {:?} quoting so the generated python literal stays valid
+    let body_req = "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"c116\"}}\n";
+    let body_res = "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{\"content\":\"c116-file\"}}\n";
+    let script_body = format!(
+        "import time\nf = open(r'{}', 'a')\nf.write({:?})\nf.flush()\nf.write({:?})\nf.flush()\ntime.sleep(8.0)\n",
+        file.to_str().unwrap(),
+        body_req,
+        body_res,
+    );
+    let script = fx.path().join("c116writer.py");
+    std::fs::write(&script, script_body)
+        .expect("the script writes");
     let mut writer = Command::new("python3")
-        .args([
-            "-c",
-            &format!(
-                "import time
-f = open(r'{}', 'a')
-f.write('{{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{{\"name\":\"c116\"}}}}\\n')
-f.flush()
-f.write('{{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{{\"content\":\"c116-file\"}}}}\\n')
-f.flush()
-time.sleep(8.0)",
-                file.to_str().unwrap()
-            ),
-        ])
+        .arg(&script)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
