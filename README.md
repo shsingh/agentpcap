@@ -13,7 +13,13 @@ path.
 
 ## Status
 
-Early development, specification-first. The specification
+The `2026.01-rc1` evaluation gate ships: all six measurements ran
+against the published figures — M001 recall `1.0`, M002 overhead
+`2.164%` CPU against the 3% figure, M003's matrix answering three
+covered transports with one named gap, M006 handoff at `≈0.02–0.04 s`
+against the 2-second budget (the
+[gate report](releases/2026.01-rc1.md)). Early development,
+specification-first. The specification
 ([`docs/spec.md`](docs/spec.md)) is in force and renders in CI. The
 reference implementation builds to it in Rust (eBPF via
 [aya](https://github.com/aya-rs/aya)).
