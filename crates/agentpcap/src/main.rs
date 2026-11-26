@@ -571,6 +571,13 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
     // thread killed inside its SSL call parks keys nobody answers —
     // the tap deletes an entry when its pid no longer exists, so the
     // map never exhausts and the canary stays truthful
+    // the falsification face (issue #83 scratch): the TLS canary's
+    // pair/stale faces ride the tap's stderr at exit
+    let tls_canary: aya::maps::Array<aya::maps::MapData, u64> =
+        match bpf.take_map("tls_canary").expect("tls canary map").try_into() {
+            Ok(m) => m,
+            Err(_) => panic!("the tls canary map takes"),
+        };
     let mut tls_pending: aya::maps::HashMap<aya::maps::MapData, u64, SavedTlsWire> =
         match bpf.take_map("tls_pending").expect("tls pending map").try_into() {
             Ok(m) => m,
@@ -1238,6 +1245,12 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
             }
         }
     }
+    // the falsification receipt (issue #83 scratch): the pair stats
+    for (idx, name) in [(8u32, "pair_mismatch"), (9, "stale_at_entry"), (11, "collects")] {
+        if let Ok(v) = tls_canary.get(&idx, 0) {
+            eprintln!("agentpcap tap: c115diag {name}={}", v);
+        }
+    }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
 
     // C129/the ADR-0002 exit face: the final writes carry the no-response
@@ -1273,9 +1286,15 @@ struct SavedTlsWire {
     // face, issue #106): the bounded-cleanup sweep checks /proc by it
     // directly — the key's pid half never translates in userspace.
     ns_pid: u32,
+    // The park's call flavor + the *written slot's pre-call value ride
+    // the wire for the issue #83 falsification face (the probe's
+    // SavedTls layout keeps the two sides identical — the field lists
+    // match, the sizes assert together).
+    flavor: u32,
+    stale_at_entry: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<SavedTlsWire>() == 24);
+const _: () = assert!(core::mem::size_of::<SavedTlsWire>() == 32);
 // zeroable + any-bit-pattern: the sweep face reads its values' ns pid
 unsafe impl aya::Pod for SavedTlsWire {}
 

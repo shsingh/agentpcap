@@ -264,18 +264,106 @@ def run_tls(binary, workdir, marker):
 
 
 def run_sse(binary, workdir, marker):
-    """The legacy HTTP+SSE row: the `data:`-line parse face shipped in
-    the alpha2 lane, but the capture face that delivers the SSE reply
-    holds on the stale-content defect — the gap is named with its issue
-    link. The row reports the honest face."""
-    del binary, workdir, marker
-    return {
-        "transport": "legacy-http-sse",
-        "verdict": "gap",
-        "evidence": "the reply capture face rides issue "
-        "https://github.com/shsingh/agentpcap/issues/83 "
-        "(the parse face shipped; the capture cell held with its red receipt)",
-    }
+    """The legacy HTTP+SSE row: the SSE-framed reply rides the same TLS
+    boundary (the C115 face) — the fixture serves a real exchanged
+    `text/event-stream` body with the JSON in a `data:` line. Covered
+    requires THIS run's own boundary evidence tied to the run's marker.
+    The stale-content capture defect (issue #83) rides the per-flavor
+    park face; the exchange runs and the capture proves it either way."""
+    fx = Path(workdir) / "sse"
+    fx.mkdir(parents=True, exist_ok=True)
+    cert = fx / "tls-cert.pem"
+    key = fx / "tls-key.pem"
+    try:
+        gen = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(key), "-out", str(cert),
+             "-days", "2", "-nodes", "-subj", "/CN=lab"],
+            capture_output=True,
+        )
+    except FileNotFoundError as e:
+        return {
+            "transport": "legacy-http-sse",
+            "verdict": "gap",
+            "evidence": "the openssl face missing: " + str(e),
+        }
+    if gen.returncode != 0:
+        return {
+            "transport": "legacy-http-sse",
+            "verdict": "gap",
+            "evidence": "the openssl face failed: " + gen.stderr.decode()[:120],
+        }
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "mcp-tls.py"
+    if not fixture.exists():
+        return {
+            "transport": "legacy-http-sse",
+            "verdict": "gap",
+            "evidence": "the fixture ships missing: mcp-tls.py",
+        }
+    tmp_fixture = fx / "agentpcap-m003-sse.py"
+    shutil.copy(fixture, tmp_fixture)
+    ledger = fx / "m003-sse.jsonl"
+    tap = subprocess.Popen(
+        [binary, "tap", "--ledger", str(ledger), "--duration", "10"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        import time as _t2  # noqa: PLC0415
+
+        _t2.sleep(1.2)
+        server = subprocess.Popen(
+            ["python3", "-u", str(tmp_fixture), "server", "0", marker, "sse"],
+            env={
+                "AGENTPCAP_TLS_CERT": str(cert),
+                "AGENTPCAP_TLS_KEY": str(key),
+                "PATH": os.environ.get("PATH", ""),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        port = server.stdout.readline().decode().strip()
+        client = subprocess.run(
+            ["python3", "-u", str(tmp_fixture), "client", port, marker, "http"],
+            capture_output=True,
+        )
+        _t2.sleep(4)
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+        records = export_records(binary, ledger)
+        boundary = [r for r in records if "tls-boundary" in json.dumps(r)]
+        # the coverage tie: the marker rides the merged tools-call face
+        owned = [r for r in boundary if json.dumps(r).find(marker) >= 0]
+        # the SSE face: the tools-call carries the tool result's text
+        # riding the data: line (the C115 face) when the pair merges —
+        # coverage requires the merged record's own `tls-<marker>`
+        # result; an owned-but-unidentified row never passes wide
+        sse_face = any(
+            r.get("method") == "tools/call" and "tls-" + marker
+            in json.dumps((r.get("payload") or {}).get("result") or {})
+            for r in owned
+        )
+        covered = sse_face and client.returncode == 0
+        events = sorted({r["event"] for r in records if r.get("event")})
+        row = {
+            "transport": "legacy-http-sse",
+            "verdict": "covered" if covered else "gap",
+            "evidence": "owned boundary records=" + str(len(owned))
+            + " sse-merged=" + str(sse_face).lower()
+            + " marker=" + marker + " port=" + port
+            + " client-rc=" + str(client.returncode)
+            + " events=" + json.dumps(events),
+        }
+        if not covered:
+            row["evidence"] += (
+                " (the capture face rides issue"
+                " https://github.com/shsingh/agentpcap/issues/83)")
+        return row
+    finally:
+        finish_tap(tap)
 
 
 def main(argv=None):

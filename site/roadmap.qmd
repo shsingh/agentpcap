@@ -12,14 +12,14 @@ The live board carries the same set of cards:
 `2026.01-rc1` gate evidence complete: the six-measurement set ran on the
 build VM — M001 recall `1.0` on the seeded fleet, M002 overhead under
 the 3% figure at `2.164%` CPU / `−0.23%` wall, M003's matrix answering
-three covered transports with one named gap (the fourth reports the
-gap without an exchange), M004 fidelity
+four covered transports with zero gaps, M004 fidelity
 kind-for-kind, M005 precision `1.0`, M006 handoff at `≈0.02–0.04 s`
 against the 2-second budget ([the gate
 report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-rc1.md),
 [the review-bot sweep](https://github.com/shsingh/agentpcap/pull/112)).
-The remaining gap rides [#83](https://github.com/shsingh/agentpcap/issues/83)
-(the legacy-SSE capture face); the parked research faces
+The legacy-SSE gap closed on [PR
+#114](https://github.com/shsingh/agentpcap/pull/114) (the TLS
+park/collect pair face); the parked research faces
 ([#76](https://github.com/shsingh/agentpcap/issues/76),
 [#55](https://github.com/shsingh/agentpcap/issues/55)) stay open with
 their receipts. The gate PR carries the release notes; the signed tag

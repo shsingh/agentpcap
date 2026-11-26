@@ -12,13 +12,37 @@
 # uprobe's attach surface). The fixture trusts nothing: it pins the
 # self-signed chain only for the lab.
 
+import json
 import os
+import queue
 import socket
 import ssl
 import sys
+import threading
 
 CERT = os.environ.get("AGENTPCAP_TLS_CERT", "/tmp/agentpcap-tls-cert.pem")
 KEY = os.environ.get("AGENTPCAP_TLS_KEY", "/tmp/agentpcap-tls-key.pem")
+
+
+def _sse_stream(listener, ctx, reply_q, marker):
+    """The legacy SSE stream connection: a GET face that delivers the
+    `text/event-stream` reply on a SEPARATE SSL connection."""
+    stream_conn, _ = listener.accept()
+    with ctx.wrap_socket(stream_conn, server_side=True) as tls:
+        try:
+            tls.recv(4096)  # the GET /sse request line
+            first = reply_q.get(timeout=15)
+            frame = (
+                b'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text",'
+                b'"text":"tls-' + marker.encode() + b'"}]}}\n\n'
+            )
+            tls.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + frame
+            )
+            import time
+            time.sleep(0.5)
+        except Exception as e:
+            print("sse stream face:", e, file=sys.stderr)
 
 
 def server(port, marker, http=False, sse=False):
@@ -27,33 +51,35 @@ def server(port, marker, http=False, sse=False):
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", port))
+    if sse:
+        # the legacy HTTP+SSE contract: the request POSTs on connection
+        # one and the replies deliver on a SEPARATE long-lived GET
+        # stream (the /sse endpoint). Two TLS connections ride the tap's
+        # boundary; the reply rides the GET stream's SSL_write only.
+        listener.listen(2)
+        print(listener.getsockname()[1], flush=True)
+        reply_q: "queue.Queue[bytes]" = queue.Queue()
+        conn, _ = listener.accept()
+        stream = threading.Thread(target=_sse_stream, args=(listener, ctx, reply_q, marker), daemon=True)
+        stream.start()
+        with ctx.wrap_socket(conn, server_side=True) as tls:
+            line = tls.recv(4096).decode()
+            if "tools/call" in line:
+                reply_q.put(json.dumps({"id": 1}).encode())
+                import time
+                time.sleep(0.6)
+        return
     listener.listen(1)
     print(listener.getsockname()[1], flush=True)
     conn, _ = listener.accept()
     with ctx.wrap_socket(conn, server_side=True) as tls:
         line = tls.recv(4096).decode()
         if http:
-            if sse:
-                # the SSE reply face: the tool result answers the gated
-                # POST as a text/event-stream body, the JSON rides one
-                # `data:` line
-                data = (
-                    b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",'
-                    b'"text":"tls-' + marker.encode() + b'"}]}}\n\n'
-                )
-                tls.sendall(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "
-                    + str(len(data)).encode()
-                    + b"\r\n\r\n" + data
-                )
-                import time
-                time.sleep(0.4)
-                return
             # the response frames too: the admission face names the
             # status-line prefix, the body stays the JSON-RPC result
             # the reply rides chunked transfer: the size lines split
             # the JSON, the boundary's decode face concatenates
-            body = b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",'
+            body = b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","'
             tail = ('"text":"tls-' + marker + '"}]}}').encode()
             tls.sendall(
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -87,7 +113,7 @@ def server(port, marker, http=False, sse=False):
             time.sleep(0.4)
 
 
-def client(port, marker, http=False):
+def client(port, marker, http=False, sse=False):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -125,4 +151,4 @@ if __name__ == "__main__":
     if role == "server":
         server(port, marker, http, sse)
     else:
-        client(port, marker, http)
+        client(port, marker, http, sse)

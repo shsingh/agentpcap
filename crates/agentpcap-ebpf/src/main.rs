@@ -62,6 +62,12 @@ const SLOT_INVOKE: u32 = 0;
 const SLOT_READ_FAIL: u32 = 1;
 const SLOT_PUSH_OK: u32 = 2;
 const SLOT_PUSH_FAIL: u32 = 3;
+// the falsification face (issue #83 scratch): the pair + stale-slot proof
+pub const SLOT_PAIR_MISMATCH: u32 = 8;
+pub const SLOT_TLS_STALE_COUNT: u32 = 9;
+pub const SLOT_TLS_MISPAIR_WRITE_READ: u32 = 10;
+const SLOT_TLS_COLLECTS: u32 = 11;
+
 
 #[map(name = "events")]
 static mut CANARY: Array<u64> = Array::with_max_entries(4, 0);
@@ -572,7 +578,7 @@ pub fn agentpcap_recv_exit(mut ctx: TracePointContext) -> i64 {
 static mut TLS_EVENTS: RingBuf = RingBuf::with_byte_size(4194304, 0);
 
 #[map(name = "tls_canary")]
-static mut TLS_CANARY: Array<u64> = Array::with_max_entries(6, 0);
+static mut TLS_CANARY: Array<u64> = Array::with_max_entries(12, 0);
 
 const SLOT_CGID: u32 = 4;
 const SLOT_PENDING_LOSS: u32 = 5;
@@ -590,9 +596,17 @@ pub struct SavedTls {
     // the userspace bounded-cleanup sweep reads it — the key's pid
     // half stays kernel-space (the raw tgid) and never translates.
     ns_pid: u32,
+    // The falsification face (issue #83): the park's call flavor
+    // (0 write / 1 read) and the *written slot's pre-call value —
+    // a dirty slot at entry proof the caller's stack reuses the
+    // count pointer across calls.
+    flavor: u32,
+    stale_at_entry: u64,
 }
+pub const TLS_FLAVOR_WRITE: u32 = 0;
+pub const TLS_FLAVOR_READ: u32 = 1;
 
-const _: () = assert!(core::mem::size_of::<SavedTls>() == 24);
+const _: () = assert!(core::mem::size_of::<SavedTls>() == 32);
 
 #[map(name = "tls_pending")]
 static mut TLS_PENDING: HashMap<u64, SavedTls> = HashMap::with_max_entries(8192, 0);
@@ -602,7 +616,7 @@ pub fn agentpcap_tls_write(mut ctx: ProbeContext) -> i64 {
     // SSL_write_ex(ssl, buf, num, *written): park the coordinates —
     // the capture only collects at the return face, so a retried or
     // failed write never parks a call before any byte is accepted
-    tls_park(&mut ctx)
+    tls_park(&mut ctx, TLS_FLAVOR_WRITE)
 }
 
 #[uretprobe]
@@ -616,7 +630,7 @@ pub fn agentpcap_tls_read(mut ctx: ProbeContext) -> i64 {
     // SSL_read_ex(ssl, buf, num, *written): the buffer is EMPTY at
     // entry — the destination never answers at the entry face, so the
     // read only collects after the call fills it
-    tls_park(&mut ctx)
+    tls_park(&mut ctx, TLS_FLAVOR_READ)
 }
 
 #[uretprobe]
@@ -629,7 +643,7 @@ pub fn agentpcap_tls_read_ret(ctx: RetProbeContext) -> i64 {
 /// The shared park: the cgroup gate rides before the parking (only the
 /// calibrated scope ever fills the pending map); a lost park means a
 /// lost observation and stays visible in the canary.
-fn tls_park(ctx: &mut ProbeContext) -> i64 {
+fn tls_park(ctx: &mut ProbeContext, flavor: u32) -> i64 {
     unsafe {
         // the invoke counter lives before the cgroup gate, and the
         // cgroup id rides its own slot (it never overwrites the count)
@@ -652,15 +666,33 @@ fn tls_park(ctx: &mut ProbeContext) -> i64 {
         if ubuf == 0 || wptr == 0 {
             return 0;
         }
-        // the FULL pid_tgid keys the entry: two live threads own
-        // disjoint keys — their parks and collects never mix. A thread
-        // killed inside its call leaks its key; the tap sweeps dead
-        // pids out of the map periodically (the bounded-cleanup face)
-        let key = bpf_get_current_pid_tgid();
+        // the key pairs the FULL pid_tgid with the call flavor: a
+        // CPython ssl wrapper interleaves read and write faces heavily
+        // (14.8k mispairs on one exchange drove the #83 stale-content
+        // defect), so one shared slot let the wrong flavor's return
+        // face consume a park and read another call's buffer state.
+        // Each flavor owns its slot; the tap sweeps dead pids out of
+        // the map periodically (the bounded-cleanup face).
+        let key = (bpf_get_current_pid_tgid() << 1) | (flavor as u64);
+        // the falsification face: the *written slot's pre-call value —
+        // at entry the caller has not written the count, so a nonzero
+        // read names a REUSED slot (a past call's count) and rides the
+        // stale-slot canary
+        let stale: u64 = match unsafe { aya_ebpf::helpers::bpf_probe_read_user(wptr as *const u64) } {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+        if stale != 0 {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_TLS_STALE_COUNT) {
+                unsafe { *slot += 1; }
+            }
+        }
         let saved = SavedTls {
             ubuf: ubuf as u64,
             wptr: wptr as u64,
             ns_pid: ns_tgid(),
+            flavor,
+            stale_at_entry: stale,
         };
         if TLS_PENDING.insert(&key, &saved, 0).is_err() {
             if let Some(slot_c) = TLS_CANARY.get_ptr_mut(SLOT_PUSH_FAIL) {
@@ -679,15 +711,31 @@ fn tls_park(ctx: &mut ProbeContext) -> i64 {
 /// HTTP framed face: an HTTPS client rides headers and a JSON body
 /// in one buffer, and `POST ...` never passes the bare-JSON filter.
 fn tls_collect(ret: i32, is_read: u32) -> i64 {
-    let key = unsafe { bpf_get_current_pid_tgid() };
+    // the key mirrors the park face's per-flavor slot (issue #83)
+    let key = unsafe { (bpf_get_current_pid_tgid() << 1) | (is_read as u64) };
     let entry = match unsafe { TLS_PENDING.get(&key) } {
         Some(e) => SavedTls {
             ubuf: e.ubuf,
             wptr: e.wptr,
             ns_pid: e.ns_pid,
+            flavor: e.flavor,
+            stale_at_entry: e.stale_at_entry,
         },
         None => return 0,
     };
+    unsafe {
+        // the falsification face: per-flavor keys mean a cross-flavor
+        // entry cannot exist; the canary faces = the regression tripwires
+        if entry.flavor != is_read {
+            if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_PAIR_MISMATCH) {
+                *slot += 1;
+            }
+            return 0;
+        }
+        if let Some(slot) = TLS_CANARY.get_ptr_mut(SLOT_TLS_COLLECTS) {
+            *slot += 1;
+        }
+    }
     unsafe {
         let _ = TLS_PENDING.remove(&key);
     }
@@ -713,7 +761,7 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
         // the admission faces read their own small frames (40 or 8
         // bytes); the sample buffer reads once, directly into the wire
         // struct — the collect frame never holds two byte arrays
-        if !candidate(buf, take) && !http_prefix(buf) {
+        if !candidate(buf, take) && !http_prefix(buf) && !sse_prefix(buf, take) {
             return 0;
         }
         let mut sample = PipeSample {
@@ -746,6 +794,50 @@ fn tls_collect(ret: i32, is_read: u32) -> i64 {
         }
     }
     0
+}
+
+/// The SSE-framed admission face (ADR-0011, issue #83): the legacy
+/// HTTP+SSE body opens `event: message\ndata: {"jsonrpc"...` — the
+/// frame leads with `event:` or `data:` instead of a bare `{`, so the
+/// ADR-0003 brace filter rejected every SSE reply before the push. The
+/// face admits the frame when a `data:` prefix rides inside the same
+/// 40-byte window and carries the jsonrpc member after it; the
+/// userspace classifier splits the `data:` line (the C115 parse face).
+#[inline(never)]
+fn sse_prefix(buf: *const u8, take: usize) -> bool {
+    unsafe {
+        let mut sniff = [0u8; 40];
+        let probe = (take as usize).min(40);
+        if probe < 6 {
+            return false;
+        }
+        let mut sniff_probed = [0u8; 40];
+        if bpf_probe_read_user_buf(buf, &mut sniff_probed[..probe]).is_err() {
+            return false;
+        }
+        sniff[..probe].copy_from_slice(&sniff_probed[..probe]);
+        if !sniff.starts_with(b"event:") && !sniff.starts_with(b"data:") {
+            return false;
+        }
+        // the jsonrpc member rides after the data: prefix inside the
+        // same window; scan with the same fixed-compare shape as the
+        // candidate face to keep the verifier satisfied
+        let mut k = 0usize;
+        while k + 7 <= probe {
+            if sniff[k] == b'j'
+                && sniff[k + 1] == b's'
+                && sniff[k + 2] == b'o'
+                && sniff[k + 3] == b'n'
+                && sniff[k + 4] == b'r'
+                && sniff[k + 5] == b'p'
+                && sniff[k + 6] == b'c'
+            {
+                return true;
+            }
+            k += 1;
+        }
+        false
+    }
 }
 
 /// The HTTP framing face: the method or status prefixes the body —
