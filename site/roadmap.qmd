@@ -9,17 +9,22 @@ The live board carries the same set of cards:
 
 ## Current phase
 
-`2026.01-alpha2` gate evidence complete: the wire class shipped — the
-socket collector, the TLS-boundary collector, session reassembly, the
-unidentified-flow events, `diff` and `export`, the systemd unit and the
-DaemonSet all landed ([the gate report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-alpha2.md),
-[the review-bot sweep](https://github.com/shsingh/agentpcap/pull/84)).
-The two named gaps ride open issues with their red receipts
-([#83](https://github.com/shsingh/agentpcap/issues/83),
-[#85](https://github.com/shsingh/agentpcap/issues/85)). The gate PR
-carries the release notes; the signed tag `2026.01-alpha2` and the
-attested build follow the merge. The evaluation gate (2026.01-rc1)
-starts next.
+`2026.01-rc1` gate evidence complete: the six-measurement set ran on the
+build VM — M001 recall `1.0` on the seeded fleet, M002 overhead under
+the 3% figure at `2.164%` CPU / `−0.23%` wall, M003's matrix answering
+three covered transports with one named gap (the fourth reports the
+gap without an exchange), M004 fidelity
+kind-for-kind, M005 precision `1.0`, M006 handoff at `≈0.02–0.04 s`
+against the 2-second budget ([the gate
+report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-rc1.md),
+[the review-bot sweep](https://github.com/shsingh/agentpcap/pull/112)).
+The remaining gap rides [#83](https://github.com/shsingh/agentpcap/issues/83)
+(the legacy-SSE capture face); the parked research faces
+([#76](https://github.com/shsingh/agentpcap/issues/76),
+[#55](https://github.com/shsingh/agentpcap/issues/55)) stay open with
+their receipts. The gate PR carries the release notes; the signed tag
+`2026.01-rc1` and the attested build follow the merge. The
+general-availability gate (`2026.01`) starts next.
 
 ## Release gates
 
@@ -61,6 +66,11 @@ receipts live in
 | [#23](https://github.com/shsingh/agentpcap/issues/23) | feat: coexistence export consumption with the dedupe key | ledger |
 
 ## 2026.01-rc1 — The evaluation gate
+
+Gate evidence complete: [the 2026.01-rc1
+report](https://github.com/shsingh/agentpcap/blob/main/releases/2026.01-rc1.md)
+carries the receipts; the transcripts ride the six measurement issues
+below with the build-VM runs.
 
 | Issue | Title | Labels |
 |---|---|---|
