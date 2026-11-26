@@ -108,6 +108,63 @@ five still-open threads disposition here.
 ### The verdict
 
 No open review bot thread blocks the `2026.01-alpha2` gate: two ride
-documented races the specs declare (ADR-0004, issue #83), two carry
-follow-up slices with their red receipts and their cells (#85, and the
-file-write drop face), and one face is fixed in this audit PR (C009).
+documented races the specs declare (ADR-0004, issue #83), one carries a
+follow-up slice with its red receipt and cell (#85), one is superseded
+on main (#63), and one is fixed in this audit PR (C009).
+
+(The tally corrected per the open review finding on the sweep PR
+itself: the #85 follow-up and the file-write drop face are one and the
+same fix. The follow-up has since LANDED — [PR
+#105](https://github.com/shsingh/agentpcap/pull/105) closed #85 with
+the pidfd `fstat` resolve and the `ChanResolve` skip face;
+`resolved_pipe_channel` in `crates/collector/src/lib.rs` carries the
+three faces on main.)
+
+## The rc1 evaluation-lane sweep (PRs #86–#111, 2026-11-26)
+
+Every merged pull request of the rc1 evaluation lane, audited after the
+last PR (#111) merged. Thread counts ride each PR's review threads; a
+resolved thread's fix carries its ledger receipt on that PR. The
+census: one `reviewThreads(first: 100)` GraphQL query per PR.
+
+| PR | Lane | Threads | Resolved | Open |
+|----|------|---------|----------|------|
+| #86 | the alpha2 gate report | 2 | 2 | 0 |
+| #87 | the M004 harness scaffold | 5 | 5 | 0 |
+| #89 | the M002 overhead faces | 6 | 6 | 0 |
+| #90 | the M003 transport matrix | 5 | 5 | 0 |
+| #91 | the M004 between-sessions face | 6 | 6 | 0 |
+| #94 | the M005 triage measurement | 5 | 5 | 0 |
+| #97 | the M006 gate-handoff harness | 6 | 6 | 0 |
+| #98 | the idle-drain backoff | 0 | 0 | 0 (no thread) |
+| #99 | the per-sample comm and fd caches | 5 | 5 | 0 |
+| #101 | the one-share drain and the sweep gate | 3 | 3 | 0 |
+| #102 | the eBPF ring buffers | 3 | 3 | 0 |
+| #105 | the pidfd fstat fd resolve | 5 | 5 | 0 |
+| #107 | the pidns identity face | 1 | 1 | 0 |
+| #108 | the pipe direction-stamp merge | 4 | 4 | 0 |
+| #109 | the wire comm face | 2 | 2 | 0 |
+| #110 | the M001 fleet recall | 6 | 6 | 0 |
+| #111 | the buffered ledger landing | 7 | 7 | 0 |
+| #84 | the alpha2 sweep itself | 2 | 1 | 0* |
+
+*The #84 tally finding dispositioned with the verdict correction above;
+the thread resolves on the audit PR that carries this section.
+
+### The rc1 disposition set
+
+Every thread across #86–#111 resolved pre-merge with its fix cited on
+the thread. One open thread dispositioned in this sweep:
+
+- **PR #84 — `the verdict counts #85 twice`:** fixed here. The
+  corrected tally reads the #85 follow-up as ONE fix, the #63 thread as
+  superseded, and names the #85 slice LANDED at PR #105 (the fact-check
+  rides the live `resolved_pipe_channel` in `crates/collector/src/lib.rs`).
+
+### The verdict
+
+No open review bot thread blocks the `2026.01-rc1` gate. The two
+parked research faces (#76's btf_type walk, #55's fork lineage) carry
+their issue receipts and stay open untouched; the stale TLS-buffer
+defect (#83) rides its documented race face into the rc1 gate report's
+remaining-gaps row.
