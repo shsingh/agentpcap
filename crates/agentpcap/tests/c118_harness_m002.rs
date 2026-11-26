@@ -10,8 +10,39 @@
 // carries no tap-internal timing.
 // Cell ledger: tests/matrix/LEDGER.md.
 
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_agentpcap")
+/// The measurement face rides the RELEASE binary: the M002 figure is a
+/// performance contract, and the artifact an operator runs is the
+/// optimized build (ADR-0002). The debug profile's unoptimized sha and
+/// serde paths roughly double the per-record CPU and never answer the
+/// release face. The cell builds the release binary once, cached in
+/// `target/release`, and points the harness at it.
+fn bin() -> String {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("../..");
+    // the target dir rides CARGO_TARGET_DIR when the caller sets it —
+    // a default-path face would measure a stale binary left behind
+    let target_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
+            workspace
+                .join("target")
+                .to_str()
+                .expect("the target path stays utf8")
+                .to_string()
+        }),
+    );
+    let status = std::process::Command::new(
+        std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()),
+    )
+    .args(["build", "--release", "-p", "agentpcap"])
+    .current_dir(&workspace)
+    .status()
+    .expect("cargo runs");
+    assert!(status.success(), "the release build answers green");
+    target_dir
+        .join("release/agentpcap")
+        .to_str()
+        .expect("the release path stays utf8")
+        .to_string()
 }
 
 #[test]
@@ -34,6 +65,10 @@ fn c118_the_m002_item_answers_the_tap_delta_against_the_figure() {
                 eval_dir.to_str().expect("the eval path stays utf8"),
                 std::env::var("PYTHONPATH").unwrap_or_default()
             ),
+        )
+        .env(
+            "CARGO",
+            std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()),
         )
         .output()
         .expect("python3 runs");
@@ -84,8 +119,10 @@ fn c118_the_m002_item_answers_the_tap_delta_against_the_figure() {
         "the tap's measured CPU consumption is measured, never defaulted"
     );
     // the CPU face: the tap's own consumption stays under the published
-    // figure (issue #88: the idle drain loop polls at 2 ms and burns
-    // over the figure — the fix face lands the idle backoff)
+    // figure. The measurement rides the RELEASE binary (ADR-0002: the
+    // operator's artifact, never the debug profile). The faces that cut
+    // the per-sample cost: the idle backoff (the ringbuf leaf), the
+    // wire comm (PR #109), the batched writer surface (C129)
     assert!(
         cpu <= figure,
         "the tap's own CPU consumption stays under the published {figure}%: {cpu}"

@@ -12,13 +12,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod conformance;
 
 pub const SCHEMA_VERSION: &str = "1.0";
+
 
 /// The known record faces (ADR-0007): the frame face 1.0 and the
 /// session-event face 2.0 chain into one ledger; anything else
@@ -132,7 +133,15 @@ pub fn verify_chain(path: &Path) -> Result<usize, LedgerError> {
 /// Append-only JSONL writer with the `prev`-hash chain.
 pub struct LedgerWriter {
     path: PathBuf,
-    file: File,
+    /// The buffered write surface (C129/ADR-0002): the records coalesce
+    /// at whole-line boundaries and land when the caller flushes at the
+    /// batch boundary; ADR-0002's sync face (sync at least every five
+    /// seconds, and always at process exit) rides `sync_if_due` and the
+    /// writer's drop.
+    file: BufWriter<File>,
+    /// The ADR-0002 five-second sync window: the first append or any
+    /// `sync_if_due` syncs when the window is due.
+    last_sync: Option<std::time::Instant>,
     prev: String,
     count: usize,
     /// The dedupe keys the ledger already carries: the existing
@@ -251,6 +260,7 @@ impl LedgerWriter {
             .append(true)
             .create(true)
             .open(path)?;
+        let file = BufWriter::with_capacity(64 * 1024, file);
         // the privacy face: the ledger carries captured arguments and
         // results - the file rides owner-only, create or append alike
         // (spec section 4: the ledger is the operator's read surface,
@@ -264,6 +274,7 @@ impl LedgerWriter {
         Ok(LedgerWriter {
             path: path.to_path_buf(),
             file,
+            last_sync: None,
             prev,
             count,
             seen_dedup,
@@ -306,7 +317,10 @@ impl LedgerWriter {
         let mut line_bytes = body.into_bytes();
         line_bytes.push(b'\n');
         self.file.write_all(&line_bytes)?;
-        self.file.flush()?;
+        // C129: the flush rides the caller's batch boundary, never the
+        // record — the buffer keeps whole lines, so a landing reader
+        // never sees a torn record (the same face the per-record write
+        // carried) and the per-record flush syscall leaves the hot path.
         self.prev = prev_face;
         self.count += 1;
         if let Some(k) = dedup_key {
@@ -324,8 +338,55 @@ impl LedgerWriter {
     /// Close the current segment to `<name>.<n>` and open a fresh
     /// segment. The fresh segment continues the chain: its first record
     /// carries the hash of the last record of the closed segment.
+    /// The batch-boundary landing face (C129): the caller (the tap's
+    /// drain) flushes after each batch so the export follow and the
+    /// gate-side poller keep landing within a batch, never inside a
+    /// torn line.
+    pub fn flush_pending(&mut self) -> Result<(), LedgerError> {
+        self.file.flush()?;
+        Ok(())
+    }
+
+    /// The ADR-0002 sync window: syncs when five seconds have passed
+    /// since the window opened, otherwise no-op. The first call opens
+    /// the window without syncing (a fresh ledger holds nothing worth
+    /// syncing back until at least one more window).
+    pub fn sync_if_due(&mut self) -> Result<(), LedgerError> {
+        self.file.flush()?;
+        let now = std::time::Instant::now();
+        match self.last_sync {
+            None => {
+                self.last_sync = Some(now);
+            }
+            Some(at) if now.duration_since(at) >= std::time::Duration::from_secs(5) => {
+                self.file.flush()?;
+                self.file
+                    .get_ref()
+                    .sync_all()
+                    .map_err(LedgerError::Io)?;
+                self.last_sync = Some(now);
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    /// The ADR-0002 exit face: the process MUST sync at exit — the
+    /// writer's drop flushes and syncs whatever the buffer holds.
+    pub fn close(&mut self) -> Result<(), LedgerError> {
+        self.file.flush()?;
+        self.file
+            .get_ref()
+            .sync_all()
+            .map_err(LedgerError::Io)
+    }
+
     pub fn rotate(&mut self) -> Result<(), LedgerError> {
         self.file.flush()?;
+        self.file
+            .get_ref()
+            .sync_all()
+            .map_err(LedgerError::Io)?;
         let mut n = 1;
         let mut seg = self.segment_path(n);
         while seg.exists() {
@@ -333,8 +394,27 @@ impl LedgerWriter {
             seg = self.segment_path(n);
         }
         fs::rename(&self.path, &seg)?;
-        self.file = File::create(&self.path)?;
+        // the privacy face rides the fresh segment too: the file holds
+        // captured arguments and results (spec section 4) — a umask
+        // default would land the recreated active segment world-readable
+        let fresh = File::create(&self.path)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(self.path.as_path(), std::fs::Permissions::from_mode(0o600))?;
+        }
+        self.file = BufWriter::with_capacity(64 * 1024, fresh);
+        self.last_sync = None;
         Ok(())
+    }
+}
+
+impl Drop for LedgerWriter {
+    fn drop(&mut self) {
+        // ADR-0002: sync at process exit. A sync failure in a drop
+        // face cannot surface; the callers flush at the boundaries and
+        // close() syncs deliberately.
+        let _ = self.file.flush();
+        let _ = self.file.get_ref().sync_all();
     }
 }
 

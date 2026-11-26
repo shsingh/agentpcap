@@ -228,7 +228,17 @@ fn record(path: PathBuf, source: Option<String>) -> ExitCode {
             }
         }
         match writer.append(&event) {
-            Ok(_) => count += 1,
+            Ok(_) => {
+                // C129: the import face lands every record — stdin can
+                // stay open for a live stream, and the export --follow
+                // face reads the tail; the import volume is low, the
+                // per-record landing is the semantics face here
+                if let Err(e) = writer.flush_pending() {
+                    eprintln!("agentpcap record: {e}");
+                    return ExitCode::FAILURE;
+                }
+                count += 1;
+            }
             Err(agentpcap_ledger::LedgerError::Duplicate(_)) => {
                 // the coexistence dedupe: the covered flow exists, the
                 // face continues and states the skip
@@ -242,6 +252,10 @@ fn record(path: PathBuf, source: Option<String>) -> ExitCode {
         }
     }
     eprintln!("agentpcap record: {count} record(s) -> {}", path.display());
+    if let Err(e) = writer.close() {
+        eprintln!("agentpcap record: {e}");
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
 }
 
@@ -759,6 +773,20 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         // (zero bpf syscalls per item). The poll's timeout carries the
         // idle backoff's step: an idle face sleeps in-kernel and burns
         // no CPU, a sampled write wakes the drain at once.
+        //
+        // C129: the batch-boundary landing face sits at the cycle head
+        // so EVERY turn reaches it, idle turns included — the records
+        // land whole at most one cycle after the capture, never in
+        // memory past the boundary, and the ADR-0002 sync window fires
+        // here too (at least every five seconds, even on an idle tap).
+        if let Err(e) = writer.flush_pending() {
+            eprintln!("agentpcap tap: {e}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = writer.sync_if_due() {
+            eprintln!("agentpcap tap: {e}");
+            return ExitCode::FAILURE;
+        }
         let step_ms = if idle_turns >= 24 {
             16
         } else if idle_turns >= 16 {
@@ -1211,6 +1239,15 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
+
+    // C129/the ADR-0002 exit face: the final writes carry the no-response
+    // flush face's tail — close() flushes and syncs; a failed final write
+    // (the disk full or gone) must not exit success and lose the tail.
+    if let Err(e) = writer.close() {
+        eprintln!("agentpcap tap: {e}");
+        return ExitCode::FAILURE;
+    }
+
     ExitCode::SUCCESS
 }
 
