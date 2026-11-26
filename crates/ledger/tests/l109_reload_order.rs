@@ -39,6 +39,9 @@ fn l109_the_reload_keeps_the_newest_keys() {
     w.append(&record(3)).unwrap();
     w.append(&record(4)).unwrap();
 
+    // the C129 read boundary: the reload reads the active file, so the
+    // pending records land first (the writer still lives)
+    w.flush_pending().unwrap();
     // the reload reads the closed segment first, the active file last:
     // the trim keeps 3 and 4, and the replays of 3 and 4 still refuse
     let mut w2 = LedgerWriter::create_with_budget(&path, budget).unwrap();

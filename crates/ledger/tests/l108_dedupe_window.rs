@@ -44,6 +44,9 @@ fn l108_the_window_bounds_the_keys_it_keeps() {
         Ok(_) => (), // evicted: the window bound is honest
         other => panic!("the evicted key appends again, got: {other:?}"),
     }
+    // the C129 read boundary: the reload loads the file's keys, so the
+    // pending records land first (the writer still lives)
+    w.flush_pending().unwrap();
     // a fresh writer loads the file's keys and trims to the budget:
     // the file order is 1,2,3,4,1 — the newest three (3,4,1) stay,
     // key 2 falls outside and appends again

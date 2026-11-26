@@ -10,6 +10,9 @@ fn l004_access_log_records_the_read() {
     let path = dir.path().join("ledger.jsonl");
     let mut w = LedgerWriter::create(&path).unwrap();
     w.append(&json!({"event": "init"})).unwrap();
+    // the C129 buffered surface: the read boundary lands the record —
+    // this test reads the ledger while the writer still lives
+    w.flush_pending().unwrap();
     let actor = "agentpcap-report/test";
     let read = LedgerReader::open(&path, actor).unwrap();
     assert_eq!(read.len(), 1);

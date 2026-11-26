@@ -45,6 +45,9 @@ fn l107_reopening_keeps_the_rotated_keys() {
     }
     // a distinct key lands in the reopened segment
     w2.append(&record("l107:third")).unwrap();
+    // the C129 read boundary: verify_chain reads the file, so the
+    // pending records land first (the writer still lives)
+    w2.flush_pending().unwrap();
     // the family holds three records across the two segments: the
     // rotated face and the live face each verify
     let rotated = path.with_file_name("l107.jsonl.1");
