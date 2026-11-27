@@ -324,7 +324,7 @@ def run_sse(binary, workdir, marker):
         )
         port = server.stdout.readline().decode().strip()
         client = subprocess.run(
-            ["python3", "-u", str(tmp_fixture), "client", port, marker, "http"],
+            ["python3", "-u", str(tmp_fixture), "client", port, marker, "sse"],
             capture_output=True,
         )
         _t2.sleep(4)
