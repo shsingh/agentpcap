@@ -24,6 +24,25 @@ specification-first. The specification
 reference implementation builds to it in Rust (eBPF via
 [aya](https://github.com/aya-rs/aya)).
 
+## Measured budgets
+
+The six [§13 evaluation hooks](docs/spec.md#13-evaluation-hooks)
+measurements post as the budgets [ADR-0002](docs/adr/0002-release-gates.md)
+binds; every number links its receipt from the
+[`2026.01-rc1` gate](releases/2026.01-rc1.md). Each release cut re-runs
+the gate on the build host and the release notes carry the fresh table:
+a release either holds every budget or the notes name the one that
+missed.
+
+| Measurement | Budget | Observed | Verdict | Receipt |
+|---|---|---|---|---|
+| M001 shadow-discovery recall | passes the planted known and shadow classes; the deciding figure under the gate rule | recall `1.0` on both classes (known 3/3, shadow 2/2); the header baseline answers `0` on stdio, the active probe returns the same bytes | PASS | [PR #110](https://github.com/shsingh/agentpcap/pull/110) merged `8fa8f71`, transcripts on [issue #26](https://github.com/shsingh/agentpcap/issues/26) |
+| M002 tap overhead | `≤ 3.0%` CPU (the published figure) | CPU `2.164%`, wall delta `−0.23%` at 750 rows for 750 frames; measured on the release binary per ADR-0002 | PASS | [PR #111](https://github.com/shsingh/agentpcap/pull/111) merged `dbe8c70`, transcript on [issue #25](https://github.com/shsingh/agentpcap/issues/25) |
+| M003 transport coverage | the four transports at full pass, zero gaps | stdio, streamable-HTTP-over-TLS, legacy SSE (the two-connection contract), a2a — all covered, four real exchanges | PASS | [PR #90](https://github.com/shsingh/agentpcap/pull/90) merged `7c3abc9`; [PR #114](https://github.com/shsingh/agentpcap/pull/114) merged `e87fec7`; the harness dispatch face rides [PR #117](https://github.com/shsingh/agentpcap/pull/117) |
+| M004 ledger fidelity | drift events match the injected change set exactly (kind-for-kind, name-for-name, fingerprint-for-fingerprint) | exact match; the cross-host and between-captures faces ride C121/C122 | PASS | [PR #91](https://github.com/shsingh/agentpcap/pull/91) merged `044cc2c`; [PR #87](https://github.com/shsingh/agentpcap/pull/87) merged `ba7e2e8` |
+| M005 triage precision | row precision `1.0`, false-positive rate `0.0` | `1.0` / `0.0`; the decoy label catches the metadata catalog, never the tap | PASS | [PR #94](https://github.com/shsingh/agentpcap/pull/94) |
+| M006 gate-handoff latency | `≤ 2.0 s` (the criteria budget) | `≈0.02–0.04 s` with margin; the poller `stop()`-joins, no torn tail | PASS | [PR #97](https://github.com/shsingh/agentpcap/pull/97) |
+
 ## Contents
 
 - [Why agentpcap exists](#why-agentpcap-exists)
