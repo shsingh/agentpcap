@@ -15,8 +15,8 @@ path.
 
 The `2026.01-rc1` evaluation gate ships: all six measurements ran
 against the published figures — M001 recall `1.0`, M002 overhead
-`2.164%` CPU against the 3% figure, M003's matrix answering three
-covered transports with one named gap, M006 handoff at `≈0.02–0.04 s`
+`2.164%` CPU against the 3% figure, M003's matrix answering four
+covered transports with zero gaps, M006 handoff at `≈0.02–0.04 s`
 against the 2-second budget (the
 [gate report](releases/2026.01-rc1.md)). Early development,
 specification-first. The specification

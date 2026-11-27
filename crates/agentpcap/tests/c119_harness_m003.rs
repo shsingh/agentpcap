@@ -84,19 +84,22 @@ fn c119_the_m003_matrix_reports_every_transport_row() {
         tls_ev.contains("owned boundary records="),
         "the tls row names its marker tie: {tls_ev}"
     );
-    // the sse row: the GAP named with its evidence — never implicit
+    // the sse row: COVERED on the run's own served exchange (the
+    // per-flavor park face closed the stale-content defect; the C115
+    // face re-lands)
     let sse = matrix
         .iter()
         .find(|r| r["transport"] == "legacy-http-sse")
         .expect("the sse row rides");
     assert_eq!(
-        sse["verdict"], "gap",
-        "the legacy-http-sse row names its gap honestly"
+        sse["verdict"], "covered",
+        "the legacy-http-sse row rides the served exchange"
     );
-    let sse_evidence = sse["evidence"].as_str().expect("the gap evidence rides");
+    let sse_evidence = sse["evidence"].as_str().expect("the coverage face rides");
     assert!(
-        sse_evidence.contains("/issues/83"),
-        "the sse gap names its issue link: {sse_evidence}"
+        sse_evidence.contains("owned boundary records=")
+            && sse_evidence.contains("sse-merged=true"),
+        "the sse row names its marker tie and the merged face: {sse_evidence}"
     );
     // the a2a row: covered with the owned-classification receipt
     let a2a = matrix
@@ -109,11 +112,12 @@ fn c119_the_m003_matrix_reports_every_transport_row() {
         a2a_ev.contains("owned a2a records="),
         "the a2a row names its owned-classification receipt: {a2a_ev}"
     );
+    // the per-flavor park face closed the legacy-SSE gap (issue #83):
+    // the receipt answers an empty gap list — nothing implicit
     let gapped = receipt["gaps"].as_array().expect("the gaps ride");
-    assert_eq!(
-        gapped,
-        &["legacy-http-sse".to_string()],
-        "the named gap rides the receipt's gap list"
+    assert!(
+        gapped.is_empty(),
+        "the gap list stays empty: {gapped:?}"
     );
 }
 
