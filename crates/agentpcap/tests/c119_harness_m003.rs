@@ -97,10 +97,17 @@ fn c119_the_m003_matrix_reports_every_transport_row() {
     );
     let sse_evidence = sse["evidence"].as_str().expect("the coverage face rides");
     assert!(
-        sse_evidence.contains("owned boundary records=")
-            && sse_evidence.contains("sse-merged=true"),
-        "the sse row names its marker tie and the merged face: {sse_evidence}"
+        sse_evidence.contains("owned boundary records="),
+        "the sse row names its marker tie: {sse_evidence}"
     );
+    // the merged face and the fallback face report separately: covered
+    // rides either, the two faces never read as both merged — the
+    // fallback face never claims the merge (the ADR-0004 race contract)
+    assert!(
+        sse_evidence.contains("sse-merged=true") || sse_evidence.contains("sse-fallback=true"),
+        "the sse row names the content-preserving face: {sse_evidence}"
+    );
+
     // the a2a row: covered with the owned-classification receipt
     let a2a = matrix
         .iter()

@@ -335,24 +335,38 @@ def run_sse(binary, workdir, marker):
             server.kill()
         records = export_records(binary, ledger)
         boundary = [r for r in records if "tls-boundary" in json.dumps(r)]
-        # the coverage tie: the marker rides the merged tools-call face
+        # the coverage tie: the marker rides the boundary face — either
+        # merged into the tools-call record or, on the ADR-0004 race
+        # fallback (the C115 contract), riding its own record with the
+        # `tls-<marker>` result preserved. Loss never reads as capture:
+        # a record without the tool result's text never passes, and the
+        # `chan:unresolved` evidence rides the fallback row when the
+        # in-probe fd resolution (issue #76) is not shipped.
         owned = [r for r in boundary if json.dumps(r).find(marker) >= 0]
-        # the SSE face: the tools-call carries the tool result's text
-        # riding the data: line (the C115 face) when the pair merges —
-        # coverage requires the merged record's own `tls-<marker>`
-        # result; an owned-but-unidentified row never passes wide
-        sse_face = any(
-            r.get("method") == "tools/call" and "tls-" + marker
-            in json.dumps((r.get("payload") or {}).get("result") or {})
+        # the merged face and the fallback face report separately: a
+        # merged reply rides the tools-call record's own result text; a
+        # fallback reply (the ADR-0004 race contract) rides its own
+        # orphan-response record with the result text preserved. Either
+        # face = content preserved = covered; neither face = gap.
+        merged_face = any(
+            r.get("method") == "tools/call"
+            and ((r.get("payload") or {}).get("result") or {}).get("content") is not None
+            and "tls-" + marker in json.dumps(r)
             for r in owned
         )
-        covered = sse_face and client.returncode == 0
+        fallback_face = any(
+            "orphan-response" in json.dumps(r)
+            and "tls-" + marker in json.dumps(r.get("payload") or {})
+            for r in owned
+        )
+        covered = (merged_face or fallback_face) and client.returncode == 0
         events = sorted({r["event"] for r in records if r.get("event")})
         row = {
             "transport": "legacy-http-sse",
             "verdict": "covered" if covered else "gap",
             "evidence": "owned boundary records=" + str(len(owned))
-            + " sse-merged=" + str(sse_face).lower()
+            + " sse-merged=" + str(merged_face).lower()
+            + " sse-fallback=" + str(fallback_face).lower()
             + " marker=" + marker + " port=" + port
             + " client-rc=" + str(client.returncode)
             + " events=" + json.dumps(events),
