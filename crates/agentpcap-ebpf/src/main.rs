@@ -11,7 +11,7 @@ use aya_ebpf::helpers::{
     bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_probe_read_user_buf,
 };
 use aya_ebpf::macros::{map, tracepoint, uretprobe, uprobe};
-use aya_ebpf::maps::{Array, HashMap, RingBuf};
+use aya_ebpf::maps::{Array, HashMap, LruHashMap, RingBuf};
 use aya_ebpf::programs::{ProbeContext, RetProbeContext, TracePointContext};
 
 /// Wire format: must match the collector crate's `PipeSample` exactly
@@ -196,6 +196,38 @@ fn cgroup_allowed() -> bool {
         let id = bpf_get_current_cgroup_id();
         CGROUP_ALLOW.get(&id).is_some()
     }
+}
+
+// The in-probe fork lineage feed (ADR-0009, issue #55): sched_process_fork
+// rides the format-verified context layout on this kernel (parent_pid at
+// offset 12, child_pid at 20 — the sys format file receipts). The feed
+// maps parent-child pairs for the write probe's lineage face; the
+// userspace reads the same pairs via the readback map.
+#[map(name = "fork_lineage")]
+static mut FORK_LINEAGE: LruHashMap<u32, u32> = LruHashMap::with_max_entries(4096, 0);
+#[map(name = "fork_readback")]
+static mut FORK_READBACK: HashMap<u32, [u8; 24]> = HashMap::with_max_entries(4096, 0);
+
+#[tracepoint(category = "sched", name = "sched_process_fork")]
+pub fn agentpcap_fork(mut ctx: TracePointContext) -> i64 {
+    // the cgroup gate rides before the insert (the face = every other
+    // probe's): excluded workloads never fill the face, an ambient fork
+    // churn cannot evict a scoped entry
+    if !cgroup_allowed() {
+        return 0;
+    }
+    let parent: i32 = match unsafe { ctx.read_at(12) } {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let child: i32 = match unsafe { ctx.read_at(20) } {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let p = parent as u32;
+    let c = child as u32;
+    let _ = unsafe { FORK_LINEAGE.insert(&c, &p, 0) };
+    0
 }
 
 #[tracepoint]

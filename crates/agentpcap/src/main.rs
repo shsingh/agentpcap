@@ -477,6 +477,28 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         eprintln!("agentpcap tap: the recv probe attach failed: {e}");
         return ExitCode::FAILURE;
     }
+    // The fork lineage feed (issue #55, ADR-0009): the
+    // sched_process_fork tracepoint feeds parent-child pairs; the
+    // face rides beside the pipe calibration so forks during the
+    // window land the lineage map.
+    let prog_fork: &mut TracePoint = match bpf
+        .program_mut("agentpcap_fork")
+        .expect("fork program")
+        .try_into()
+    {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("agentpcap tap: agentpcap_fork is not a tracepoint");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = prog_fork
+        .load()
+        .and_then(|_| prog_fork.attach("sched", "sched_process_fork"))
+    {
+        eprintln!("agentpcap tap: the fork feed attach failed: {e}");
+        return ExitCode::FAILURE;
+    }
     let mut sock_queue: RingBuf<_> =
         match bpf.take_map("sock_events").expect("sock queue map").try_into() {
             Ok(q) => q,
@@ -1252,6 +1274,21 @@ fn tap(ledger_path: PathBuf, duration_secs: u64, cgroup: Option<u64>, mode: Mode
         }
     }
     eprintln!("agentpcap tap: {seq} sample(s) sequenced");
+
+    // The fork lineage face (issue #55): pair receipt at the exit face —
+    // the spawned-child pids ride the lineage map, the fork feed = live.
+    if let Ok(fork_map) = bpf.take_map("fork_lineage").expect("fork map").try_into() {
+        let fork_map: aya::maps::HashMap<_, u32, u32> = fork_map;
+        let keys: Vec<u32> = fork_map.keys().flatten().collect();
+        for k in keys.iter().take(5) {
+            // the pair receipt: both faces ride — the child key and the
+            // parent value read back from the same entry
+            if let Ok(parent) = fork_map.get(k, 0) {
+                eprintln!("agentpcap tap: fork face child={k} parent={parent}");
+            }
+        }
+        eprintln!("agentpcap tap: fork lineage pairs={}", keys.len());
+    }
 
     // C129/the ADR-0002 exit face: the final writes carry the no-response
     // flush face's tail — close() flushes and syncs; a failed final write
