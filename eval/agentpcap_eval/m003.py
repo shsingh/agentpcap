@@ -237,6 +237,11 @@ def run_tls(binary, workdir, marker):
         client = subprocess.run(
             ["python3", "-u", str(tmp_fixture), "client", port, marker, "http"],
             capture_output=True,
+            env={
+                "AGENTPCAP_TLS_CERT": str(cert),
+                "AGENTPCAP_TLS_KEY": str(key),
+                "PATH": os.environ.get("PATH", ""),
+            },
         )
         _t.sleep(4)
         server.terminate()
@@ -244,6 +249,10 @@ def run_tls(binary, workdir, marker):
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:
             server.kill()
+        # the tap's drain face joins before the export: the export face
+        # answers on the landed ledger, not the tap's live window (the
+        # a2a leg carries the same join face)
+        tap.wait(timeout=30)
         records = export_records(binary, ledger)
         boundary = [r for r in records if "tls-boundary" in json.dumps(r)]
         # the coverage tie: this run's own marker rides the boundary rows
