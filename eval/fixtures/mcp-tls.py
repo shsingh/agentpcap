@@ -33,7 +33,7 @@ def _sse_stream(listener, ctx, reply_q, marker):
             tls.recv(4096)  # the GET /sse request line
             first = reply_q.get(timeout=15)
             frame = (
-                b'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text",'
+                b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",'
                 b'"text":"tls-' + marker.encode() + b'"}]}}\n\n'
             )
             tls.sendall(
@@ -66,8 +66,10 @@ def server(port, marker, http=False, sse=False):
             line = tls.recv(4096).decode()
             if "tools/call" in line:
                 reply_q.put(json.dumps({"id": 1}).encode())
-                import time
-                time.sleep(0.6)
+                # the server lifetime rides the stream thread: the GET
+                # face delivers the reply on connection two; an early
+                # return closes the listener before conn2 opens
+                stream.join(timeout=10)
         return
     listener.listen(1)
     print(listener.getsockname()[1], flush=True)
@@ -119,6 +121,30 @@ def client(port, marker, http=False, sse=False):
     ctx.verify_mode = ssl.CERT_NONE
     raw = socket.create_connection(("127.0.0.1", port))
     with ctx.wrap_socket(raw) as tls:
+        if sse:
+            # the two-connection legacy contract: the request POSTs here
+            # and the reply delivers on a SEPARATE /sse GET stream; the
+            # client opens BOTH connections
+            body = f'{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"fetch","marker":"{marker}"}}}}'
+            frame = f"POST /mcp HTTP/1.1\r\nHost: localhost\r\nX-Trace-Note: {{\"shaped\":true}}\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n{body}"
+            tls.sendall(frame.encode())
+            # the POST connection never carries the reply (the HTTP+SSE
+            # contract answers 202-with-body-on-stream); close it so the
+            # server's read face completes and the stream face serves
+            tls.close()
+            import time
+            time.sleep(0.3)
+            raw2 = socket.create_connection(("127.0.0.1", port))
+            with ctx.wrap_socket(raw2) as tls2:
+                tls2.sendall(b"GET /sse HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n")
+                buf = b""
+                while b"}]" not in buf:
+                    ch = tls2.recv(4096)
+                    if not ch:
+                        break
+                    buf += ch
+            assert marker.encode() in buf, "the SSE reply misses the run's marker"
+            return
         if http:
             # the real HTTPS face: headers and the JSON body ride ONE
             # SSL_write buffer — the tool call must survive the framing

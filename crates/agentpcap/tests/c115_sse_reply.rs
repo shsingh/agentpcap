@@ -67,12 +67,17 @@ fn c115_the_sse_reply_merges_with_its_request() {
         .and_then(|l| l.ok())
         .unwrap_or_default();
     eprintln!("c115 receipt: server port={port}");
+    let client_err = fx.path().join("c115-client-stderr.txt");
     let client = Command::new("python3")
-        .args(["-u", &tmp_fixture, "client", &port, "c115", "http"])
+        .args(["-u", &tmp_fixture, "client", &port, "c115", "sse"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&client_err).expect("the client stderr rides"))
         .status()
         .expect("the python client spawns");
+    let err_face = std::fs::read_to_string(&client_err).unwrap_or_default();
+    for line in err_face.trim().lines().rev().take(4) {
+        eprintln!("c115 client err: {}", line);
+    }
     assert!(client.success(), "the HTTPS exchange completes");
     let _ = server.wait();
 
